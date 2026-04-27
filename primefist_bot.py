@@ -174,7 +174,7 @@ def channel_post(ai_data: dict, source: str, link: str) -> str:
         f"<b>🥊 {html.escape(ai_data['hook_ru'])} / {html.escape(ai_data['hook_en'])}</b>\n\n"
         f"🇷🇺 {html.escape(ai_data['short_ru'])}\n\n"
         f"🇬🇧 {html.escape(ai_data['short_en'])}\n\n"
-        f"🔗 <a href=\"{link}\">{html.escape(source)} (Link)</a>\n"
+        f"🔗 <a href=\"{link}\">{html.escape(source)} (Link)</a>\n\n"
         f"💬 Подробнее в комментариях\n\n"
         f"#mma #boxing #kickboxing #primefist #fightnews"
     )
