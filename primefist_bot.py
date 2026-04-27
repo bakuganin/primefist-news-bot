@@ -171,15 +171,14 @@ async def generate_primefist_text(title, description, lang):
 def channel_post(ai_data: dict, source: str, link: str) -> str:
     """Короткий пост для канала."""
     return (
-        f"{html.escape(ai_data['hook_ru'])}\n"
-        f"{html.escape(ai_data['hook_en'])}\n\n"
+        f"<b>🥊 {html.escape(ai_data['hook_ru'])} / {html.escape(ai_data['hook_en'])}</b>\n\n"
         f"🇷🇺 {html.escape(ai_data['short_ru'])}\n\n"
         f"🇬🇧 {html.escape(ai_data['short_en'])}\n\n"
-        f"📌 {html.escape(source)}\n"
-        f"💬 Подробнее в комментариях\n"
-        f"🔗 <a href=\"{link}\">Link</a>\n\n"
+        f"🔗 <a href=\"{link}\">{html.escape(source)} (Link)</a>\n"
+        f"💬 Подробнее в комментариях\n\n"
         f"#mma #boxing #kickboxing #primefist #fightnews"
     )
+
 
 def discussion_post(ai_data: dict, source: str, tag: str, link: str) -> str:
     """Полный пост для комментариев."""
