@@ -146,10 +146,10 @@ async def generate_primefist_text(title, description, lang):
 {{
   "hook_ru": "Дерзкий байтерский заголовок RU БЕЗ эмодзи. Макс 12 слов. Интрига, провокация.",
   "hook_en": "Same bait headline EN БЕЗ эмодзи. Max 12 words. Punchy and bold.",
-  "short_ru": "2-3 предложения анонса на русском. Только факты, коротко.",
-  "short_en": "2-3 sentence teaser in English. Facts only, short.",
-  "full_ru": "Полный рерайт новости на русском своими словами. 4-6 предложений.",
-  "full_en": "Full rewrite in English in own words. 4-6 sentences.",
+  "short_ru": "2-3 предложения анонса на русском. Только факты. Используй двойной перенос строки \n\n для разделения мыслей.",
+  "short_en": "2-3 sentence teaser in English. Facts only. Use double newlines \n\n for better readability.",
+  "full_ru": "Полный рерайт новости на русском. 4-6 предложений. Обязательно разделяй текст на 2-3 абзаца с помощью \n\n.",
+  "full_en": "Full rewrite in English. 4-6 sentences. Must use paragraph breaks (\n\n) to separate ideas.",
   "poll_question": "Увлекательный вопрос для опроса на русском (например: Кто победит?). Если новость не подходит для опроса, оставь пустую строку.",
   "poll_options": ["Вариант 1", "Вариант 2", "Вариант 3"] // Массив строк с вариантами ответов (не более 4). Если опрос не нужен, оставь пустой массив []
 }}"""
