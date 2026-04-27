@@ -408,8 +408,12 @@ async def send_continuation_comment(
 # MAIN
 # ==========================================
 async def main():
+    # Create empty posted.json if it doesn't exist to prevent git push errors
+    if not os.path.exists(POSTED_FILE):
+        save_posted([])
+
     if not all([BOT_TOKEN, CHANNEL_ID, GROQ_API_KEY]):
-        log.error("Missing config.")
+        log.error("Missing config. Ensure TELEGRAM_BOT_TOKEN, CHANNEL_ID, and GROQ_API_KEY are set in GitHub Secrets.")
         return
 
     posted = load_posted()
