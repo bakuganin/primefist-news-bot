@@ -144,8 +144,8 @@ async def generate_primefist_text(title, description, lang):
 Верни ТОЛЬКО валидный JSON без markdown и без пояснений:
 
 {{
-  "hook_ru": "Дерзкий байтерский заголовок RU с эмодзи в начале. Макс 12 слов. Интрига, провокация.",
-  "hook_en": "Same bait headline EN with emoji. Max 12 words. Punchy and bold.",
+  "hook_ru": "Дерзкий байтерский заголовок RU БЕЗ эмодзи. Макс 12 слов. Интрига, провокация.",
+  "hook_en": "Same bait headline EN БЕЗ эмодзи. Max 12 words. Punchy and bold.",
   "short_ru": "2-3 предложения анонса на русском. Только факты, коротко.",
   "short_en": "2-3 sentence teaser in English. Facts only, short.",
   "full_ru": "Полный рерайт новости на русском своими словами. 4-6 предложений.",
