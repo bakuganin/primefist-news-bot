@@ -33,9 +33,8 @@ jobs:
         run: python primefist_bot.py
 
       - name: Commit and push posted.json
-        run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-          git add posted.json
-          git commit -m "Update posted.json [skip ci]" || echo "No changes to commit"
-          git push
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "Update posted.json [skip ci]"
+          file_pattern: 'posted.json'
+
