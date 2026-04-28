@@ -634,13 +634,13 @@ def fallback_ufc_event_text(title: str, description: str) -> dict[str, Any]:
     }
 
 
-def extract_x_video_url(link: str) -> str | None:
+def extract_video_url(link: str) -> str | None:
     if not link:
         return None
     try:
         from yt_dlp import YoutubeDL
     except Exception as e:
-        log.warning("yt-dlp is not available; cannot extract X video: %s", e)
+        log.warning("yt-dlp is not available; cannot extract video: %s", e)
         return None
 
     try:
@@ -651,6 +651,11 @@ def extract_x_video_url(link: str) -> str | None:
             "format": "best[ext=mp4]/best",
         }) as ydl:
             info = ydl.extract_info(link, download=False)
+
+        # Check if it's a real video or just a page with an image
+        if not info.get("duration") and "youtube" not in link.lower() and "x.com" not in link.lower():
+             # If no duration and not a major video platform, it might be a false positive
+             return None
 
         formats = [
             fmt for fmt in info.get("formats", [])
@@ -674,9 +679,50 @@ def extract_x_video_url(link: str) -> str | None:
         if direct_url and ".mp4" in direct_url:
             return direct_url
     except Exception as e:
-        log.warning("Could not extract X video for %s: %s", link, e)
+        log.debug("Could not extract video for %s: %s", link, e)
 
     return None
+
+
+def is_combat_sport(title: str, description: str) -> bool:
+    combined = f"{title} {description}".lower()
+    
+    # Positive keywords (Combat Sports)
+    combat_keywords = [
+        "mma", "ufc", "bellator", "pfl", "boxing", "boxer", "бокс", "бой", "единоборства",
+        "kickboxing", "muay thai", "тайский бокс", "кикбокс", "k-1", "k1", "grappling", 
+        "грэпплинг", "bjj", "бжж", "jiujitsu", "джиу-джитсу", "fight", "knockout", "нокаут", 
+        "ko ", "tko", "wrestling", "борцы", "борьба", "karate", "каратэ", "judo", "дзюдо", 
+        "sambo", "самбо", "taekwondo", "тхэквондо", "sumo", "сумо", "bare knuckle", 
+        "bkfc", "glory", "rizin", "one championship", "cage warriors", "vringe", 
+        "allboxing", "mmaboxing", "fightnews", "boxingscene", "puello", "yafai", "smith",
+        "aca", "ksw", "m-1", "naiza", "hardcore fc", "top dog", "mahatch", "на кулаках",
+        "кулачные", "самбо", "дзюдо", "вольная", "греко-римская", "grappling", "adcc"
+    ]
+    
+    # Negative keywords (Other Sports)
+    other_sports = [
+        "football", "soccer", "футбол", "basketball", "баскетбол", "nba", "нба", 
+        "tennis", "теннис", "golf", "гольф", "cricket", "крикет", "rugby", "регби", 
+        "baseball", "бейсбол", "hockey", "хоккей", "nhl", "нхл", "formula 1", " f1 ", 
+        "велоспорт", "плавание", "swimming", "athletics", "атлетика", "volleyball", 
+        "волейбол", "esports", "киберспорт"
+    ]
+    
+    # If it contains an "other sport" keyword, it might still be combat related (e.g. "boxer playing football")
+    # But usually, it's safer to skip if it's explicitly about another sport.
+    for sport in other_sports:
+        if re.search(rf"\b{re.escape(sport)}\b", combined):
+            # Check if a combat keyword is also present and strong
+            if any(re.search(rf"\b{re.escape(k)}\b", combined) for k in ["ufc", "mma", "boxing", "бокс"]):
+                continue
+            return False
+            
+    return any(re.search(rf"\b{re.escape(k)}\b", combined) for k in combat_keywords)
+
+
+def extract_x_video_url(link: str) -> str | None:
+    return extract_video_url(link)
 
 
 def largest_file_in_directory(directory: str) -> str | None:
@@ -905,10 +951,16 @@ def find_rss_candidate(posted: set[str], now: datetime) -> dict[str, Any] | None
                     continue
                 if candidate["id"] in posted:
                     continue
+                if not is_combat_sport(candidate["title"], candidate["summary_text"]):
+                    log.info("Skipping '%s' - not a combat sport.", candidate["title"])
+                    continue
                 published_at = candidate.get("published_at")
                 if not is_recent(published_at, now, RECENT_ARTICLE_HOURS):
                     log.info("Skipping '%s' - too old (%s)", candidate["title"], published_at)
                     continue
+                
+                # Only extract video for the final candidate to save time
+                candidate["video_source"] = extract_video_url(candidate["link"])
                 return candidate
         except Exception as e:
             log.warning("Failed RSS %s: %s", feed_info["name"], e)
@@ -941,11 +993,8 @@ def find_x_social_candidate(posted: set[str], now: datetime) -> dict[str, Any] |
                     log.warning("X RSS bridge %s is not usable: %s", feed_url, title)
                     continue
 
-                published_at = entry_datetime(entry)
-                if not is_recent(published_at, now, X_POST_LOOKBACK_HOURS):
+                if not is_combat_sport(title, summary_text):
                     continue
-
-                has_video = "video" in getattr(entry, "summary", "").lower()
 
                 return {
                     "id": post_id,
@@ -953,7 +1002,7 @@ def find_x_social_candidate(posted: set[str], now: datetime) -> dict[str, Any] |
                     "summary_text": summary_text,
                     "link": link,
                     "image": extract_image(entry),
-                    "video_source": link if has_video else None,
+                    "video_source": extract_video_url(link) or (link if has_video else None),
                     "source": "UFC X",
                     "tag": "#ufc #mma",
                     "lang": "en",
@@ -1141,6 +1190,13 @@ def find_run_candidates(posted_list: list[str]) -> list[dict[str, Any]]:
             if not candidate:
                 break
 
+            if not is_combat_sport(candidate["title"], candidate["summary_text"]):
+                continue
+
+            # Ensure video is extracted if not already (RSS candidates get it in find_rss_candidate)
+            if "video_source" not in candidate:
+                candidate["video_source"] = extract_video_url(candidate["link"])
+
             candidates.append(candidate)
             posted.add(canonical_post_id(candidate["id"]))
             log.info("Selected %s candidate: %s", source_name, candidate["title"])
@@ -1281,10 +1337,10 @@ async def generate_primefist_text(title, description, lang):
 {{
   "hook_ru": "Дерзкий байтерский заголовок RU БЕЗ эмодзи. Макс 12 слов. Интрига, провокация.",
   "hook_en": "Same bait headline EN БЕЗ эмодзи. Max 12 words. Punchy and bold.",
-  "short_ru": "2-3 предложения анонса на русском. Только факты. Используй двойной перенос строки \n\n для разделения мыслей.",
-  "short_en": "2-3 sentence teaser in English. Facts only. Use double newlines \n\n for better readability.",
-  "full_ru": "Полный рерайт новости на русском. 4-6 предложений. Обязательно разделяй текст на 2-3 абзаца с помощью \n\n.",
-  "full_en": "Full rewrite in English. 4-6 sentences. Must use paragraph breaks (\n\n) to separate ideas.",
+  "short_ru": "1-2 предложения анонса-тизера на русском. Самая суть, чтобы заинтересовать. Используй двойной перенос строки \n\n.",
+  "short_en": "1-2 sentence teaser in English. The main hook to grab attention. Use double newlines \n\n.",
+  "full_ru": "ПОДРОБНЫЙ разбор новости на русском. 5-8 предложений. Обязательно раскрой детали, предысторию или последствия. Разделяй текст на 3-4 абзаца с помощью \n\n. Этот текст пойдет в комментарии как основная статья.",
+  "full_en": "DETAILED news analysis in English. 5-8 sentences. Provide context, background, or implications. Must use 3-4 paragraph breaks (\n\n). This text serves as the main article in comments.",
   "poll_question": "Увлекательный вопрос для опроса на русском (например: Кто победит?). Если новость не подходит для опроса, оставь пустую строку.",
   "poll_options": ["Вариант 1", "Вариант 2", "Вариант 3"] // Массив строк с вариантами ответов (не более 4). Если опрос не нужен, оставь пустой массив []
 }}"""
