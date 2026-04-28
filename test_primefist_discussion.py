@@ -171,6 +171,43 @@ class SourceCandidateTest(unittest.TestCase):
             "https://x.com/ufc/status/12345"
         )
 
+    def test_post_id_strips_tracking_params_for_dedupe(self):
+        tracked = (
+            "https://combatpress.com/2026/04/cage-warriors-205-results-stephen-wins-main-event-after-card-shuffle/"
+            "?utm_source=rss&utm_medium=rss&utm_campaign=cage-warriors-205-results-stephen-wins-main-event-after-card-shuffle"
+        )
+        clean = "https://combatpress.com/2026/04/cage-warriors-205-results-stephen-wins-main-event-after-card-shuffle/"
+
+        self.assertEqual(bot_module.canonical_post_id(tracked), bot_module.canonical_post_id(clean))
+
+    def test_run_candidates_treat_tracked_and_clean_urls_as_same_article(self):
+        tracked = (
+            "https://combatpress.com/2026/04/cage-warriors-205-results-stephen-wins-main-event-after-card-shuffle/"
+            "?utm_source=rss&utm_medium=rss"
+        )
+        clean_id = bot_module.canonical_post_id(
+            "https://combatpress.com/2026/04/cage-warriors-205-results-stephen-wins-main-event-after-card-shuffle/"
+        )
+        rss_item = {
+            "id": clean_id,
+            "title": "Cage Warriors 205 Results",
+            "summary_text": "Results from Cage Warriors 205.",
+            "link": clean_id,
+            "image": None,
+            "source": "Combat Press",
+            "tag": "#mma",
+            "lang": "en",
+        }
+
+        with patch.object(bot_module, "MAX_POSTS_PER_RUN", 3), \
+             patch.object(bot_module, "MAX_X_POSTS_PER_RUN", 0), \
+             patch.object(bot_module, "MAX_UFC_EVENT_POSTS_PER_RUN", 0), \
+             patch.object(bot_module, "MAX_RSS_POSTS_PER_RUN", 1), \
+             patch.object(bot_module, "find_rss_candidate", side_effect=lambda posted, now: None if clean_id in posted else rss_item):
+            candidates = bot_module.find_run_candidates([tracked])
+
+        self.assertEqual(candidates, [])
+
     def test_fallback_primefist_text_has_required_fields(self):
         data = bot_module.fallback_primefist_text(
             "UFC X: Big update",
@@ -222,6 +259,30 @@ class SourceCandidateTest(unittest.TestCase):
         self.assertIn("Джек Делла Маддалена", data["short_ru"])
         self.assertIn("Главные бои:", data["full_ru"])
         self.assertNotIn("Official UFC upcoming event", data["short_ru"])
+        self.assertLessEqual(len(channel), 1024)
+
+    def test_fallback_rss_text_rewrites_cage_warriors_in_readable_ru_en(self):
+        data = bot_module.fallback_primefist_text(
+            "Cage Warriors 205 Results: Stephen Wins Main Event After Card Shuffle",
+            (
+                "Full results for Cage Warriors 205 which took place in Glasgow, Scotland on Saturday, April 25. "
+                "The post Cage Warriors 205 Results: Stephen Wins Main Event After Card Shuffle first appeared on Combat Press."
+            ),
+            "en",
+        )
+        channel = bot_module.channel_post(
+            data,
+            "Combat Press",
+            "https://combatpress.com/2026/04/cage-warriors-205-results-stephen-wins-main-event-after-card-shuffle/",
+        )
+
+        self.assertIn("Стивен", data["hook_ru"])
+        self.assertIn("Stephen", data["hook_en"])
+        self.assertIn("Cage Warriors 205 прошел 25 апреля", data["short_ru"])
+        self.assertIn("\n\n", data["short_ru"])
+        self.assertIn("Главный итог вечера", data["full_ru"])
+        self.assertNotIn("Вышло обновление по теме", data["short_ru"])
+        self.assertNotIn("Full results for", data["short_ru"])
         self.assertLessEqual(len(channel), 1024)
 
     def test_ufc_event_candidate_is_extracted_from_card_html(self):
