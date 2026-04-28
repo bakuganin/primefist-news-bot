@@ -75,12 +75,12 @@ RSS_FEEDS = [
     {"name": "Inside the Ropes", "url": "https://itrboxing.com/feed/", "tag": "#boxing", "lang": "en"},
 
     # ESTONIAN FEEDS
-    {"name": "Delfi Sport (Rus) - Бокс", "url": "https://rus.delfi.ee/rss/sport/boks.xml", "tag": "#boxing #эстония", "lang": "ru"},
-    {"name": "Delfi Sport (Est) - Poks", "url": "https://sport.delfi.ee/rss/poks", "tag": "#boxing #estonia", "lang": "et"},
-    {"name": "Postimees Sport - Võitlussport", "url": "https://sport.postimees.ee/rss/term/41450", "tag": "#mma #boxing #estonia", "lang": "et"},
+    # Note: Delfi and some specialized feeds are currently 404, using general sport feeds for now.
+    {"name": "Postimees Sport", "url": "https://sport.postimees.ee/rss", "tag": "#mma #boxing #estonia", "lang": "et"},
     {"name": "ERR Sport - Võitlussport", "url": "https://sport.err.ee/rss/voitlussport", "tag": "#mma #boxing #estonia", "lang": "et"},
-    {"name": "Õhtuleht Sport - Poks", "url": "https://sport.ohtuleht.ee/rss/poks", "tag": "#boxing #estonia", "lang": "et"}
+    # {"name": "Õhtuleht Sport", "url": "https://sport.ohtuleht.ee/rss", "tag": "#boxing #estonia", "lang": "et"} 
 ]
+
 
 # ==========================================
 # HELPERS
@@ -423,24 +423,37 @@ async def main():
     random.shuffle(feeds_copy)
     now = datetime.now(timezone.utc)
     
+    log.info(f"Checking {len(feeds_copy)} feeds for new articles...")
+    
     for feed_info in feeds_copy:
         try:
             feed = feedparser.parse(feed_info["url"])
             if feed is None or not hasattr(feed, 'entries'):
+                log.warning(f"Feed {feed_info['name']} has no entries or failed to parse.")
                 continue
-            for entry in feed.entries[:3]:
+            
+            entries_to_check = feed.entries[:15]
+            log.info(f"Feed {feed_info['name']}: found {len(feed.entries)} total entries, checking top {len(entries_to_check)}")
+            
+            for entry in entries_to_check:
                 link = getattr(entry, "link", None)
-                if not link or link in posted:
+                if not link:
+                    continue
+                
+                # Normalize link to avoid duplicates with different query params if needed
+                # But for now, keep it simple.
+                if link in posted:
                     continue
                 
                 title = getattr(entry, "title", "No Title")
                 summary_html = getattr(entry, "summary", "")
                 soup = BeautifulSoup(summary_html, 'html.parser')
-                summary_text = soup.get_text()[:400]
+                summary_text = soup.get_text()[:600] # Increased context for AI
                 
                 if hasattr(entry, 'published_parsed') and entry.published_parsed:
                     dt = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
                     if now - dt > timedelta(hours=48):
+                        log.info(f"Skipping '{title}' - too old ({dt})")
                         continue
                 
                 image_url = extract_image(entry)
@@ -461,8 +474,9 @@ async def main():
             break
             
     if not selected_article:
-        log.info("No unposted/recent articles found.")
+        log.info("Finished checking all feeds. No unposted/recent articles found.")
         return
+
         
     log.info(f"Selected article: {selected_article['title']}")
     ai_data = await generate_primefist_text(selected_article['title'], selected_article['summary_text'], selected_article['lang'])
