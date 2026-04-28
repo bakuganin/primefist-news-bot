@@ -1,15 +1,18 @@
 import unittest
 from types import SimpleNamespace
+from datetime import datetime, timezone
 
 import primefist_bot as bot_module
 
 
 class FakeBot:
-    def __init__(self, updates):
+    def __init__(self, updates, photo_error=None):
         self.updates = list(updates)
+        self.photo_error = photo_error
         self.get_updates_calls = []
         self.sent_messages = []
         self.sent_polls = []
+        self.sent_photos = []
 
     async def get_updates(self, **kwargs):
         self.get_updates_calls.append(kwargs)
@@ -24,6 +27,12 @@ class FakeBot:
     async def send_poll(self, **kwargs):
         self.sent_polls.append(kwargs)
         return SimpleNamespace(message_id=1000)
+
+    async def send_photo(self, **kwargs):
+        self.sent_photos.append(kwargs)
+        if self.photo_error:
+            raise self.photo_error
+        return SimpleNamespace(message_id=1001)
 
 
 class DiscussionCommentTest(unittest.IsolatedAsyncioTestCase):
@@ -106,6 +115,51 @@ class DiscussionCommentTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sent_poll["options"], ["A", "B", "C", "D"])
         self.assertEqual(sent_poll["reply_parameters"].message_id, 888)
         self.assertFalse(sent_poll["reply_parameters"].allow_sending_without_reply)
+
+    async def test_channel_post_falls_back_to_text_when_photo_fails(self):
+        fake_bot = FakeBot([], photo_error=RuntimeError("bad image"))
+
+        sent = await bot_module.send_channel_post(
+            fake_bot,
+            "-1003902344210",
+            "https://example.com/image.jpg",
+            "<b>Post</b>"
+        )
+
+        self.assertEqual(sent.message_id, 999)
+        self.assertEqual(len(fake_bot.sent_photos), 1)
+        self.assertEqual(len(fake_bot.sent_messages), 1)
+        self.assertEqual(fake_bot.sent_messages[0]["text"], "<b>Post</b>")
+
+
+class SourceCandidateTest(unittest.TestCase):
+    def test_nitter_link_is_normalized_to_x(self):
+        self.assertEqual(
+            bot_module.normalize_x_link("https://nitter.net/ufc/status/12345#m"),
+            "https://x.com/ufc/status/12345"
+        )
+
+    def test_ufc_event_candidate_is_extracted_from_card_html(self):
+        html = """
+        <article class="c-card-event--result">
+          <h3 class="c-card-event--result__headline">
+            <a href="/event/ufc-test">Fighter A vs Fighter B</a>
+          </h3>
+          <div class="c-card-event--result__date">Sat, May 2 / 2:00 PM EEST / Main Card</div>
+          <div class="c-card-event--result__location">Test Arena Tallinn Estonia</div>
+          <img src="/images/test.jpg" />
+        </article>
+        """
+        now = datetime(2026, 4, 28, tzinfo=timezone.utc)
+
+        candidates = bot_module.extract_ufc_event_candidates(html, set(), now)
+
+        self.assertEqual(len(candidates), 1)
+        candidate = candidates[0]
+        self.assertEqual(candidate["id"], "ufc-event:upcoming:https://www.ufc.com/event/ufc-test")
+        self.assertEqual(candidate["source"], "UFC Events")
+        self.assertEqual(candidate["link"], "https://www.ufc.com/event/ufc-test")
+        self.assertIn("Fighter A vs Fighter B", candidate["summary_text"])
 
 
 if __name__ == "__main__":

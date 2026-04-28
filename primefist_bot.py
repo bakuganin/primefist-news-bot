@@ -6,12 +6,15 @@ import asyncio
 import feedparser
 import html
 import requests
+import random
+import sys
 from typing import Any
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta, timezone
 from telegram import Bot, ReplyParameters
 from telegram.constants import ParseMode
 from groq import AsyncGroq
+from urllib.parse import urljoin
 
 # ==========================================
 # CONFIGURATION
@@ -19,16 +22,43 @@ from groq import AsyncGroq
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
+
+def env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except ValueError:
+        log.warning("Invalid integer for %s, using default %s", name, default)
+        return default
+
+
 # Ensure we don't accidentally load an old ID from local Windows Env Variables during testing
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 CHANNEL_ID = os.environ.get("CHANNEL_ID", "").strip()
 TELEGRAM_DISCUSSION_CHAT_ID = os.environ.get("TELEGRAM_DISCUSSION_CHAT_ID", "").strip()
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
+X_RSS_FEED_URLS = [
+    url.strip()
+    for url in os.environ.get("X_RSS_FEED_URLS", "https://nitter.net/ufc/rss").split(",")
+    if url.strip()
+]
 
 POSTED_FILE = "posted.json"
 MAX_HISTORY = 2000
 DISCUSSION_FORWARD_WAIT_SECONDS = 5
 DISCUSSION_FORWARD_POLL_SECONDS = 0.25
+RECENT_ARTICLE_HOURS = env_int("RECENT_ARTICLE_HOURS", 48)
+MAX_ENTRIES_PER_FEED = env_int("MAX_ENTRIES_PER_FEED", 15)
+X_POST_LOOKBACK_HOURS = env_int("X_POST_LOOKBACK_HOURS", 8)
+UFC_EVENT_LOOKAHEAD_DAYS = env_int("UFC_EVENT_LOOKAHEAD_DAYS", 21)
+UFC_COMPLETED_LOOKBACK_HOURS = env_int("UFC_COMPLETED_LOOKBACK_HOURS", 72)
+UFC_EVENTS_URL = os.environ.get("UFC_EVENTS_URL", "https://www.ufc.com/events").strip()
+HTTP_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123 Safari/537.36"
+    ),
+    "Accept-Language": "en-US,en;q=0.9",
+}
 telegram_update_offset = None
 
 # THEIR RSS FEEDS LIST
@@ -99,6 +129,99 @@ def save_posted(posted_list):
     with open(POSTED_FILE, "w", encoding="utf-8") as f:
         json.dump(posted_list, f, indent=2, ensure_ascii=False)
 
+
+def clean_text(value: str | None) -> str:
+    if not value:
+        return ""
+    return " ".join(value.split())
+
+
+def html_to_text(value: str | None, limit: int = 900) -> str:
+    text = BeautifulSoup(value or "", "html.parser").get_text(" ", strip=True)
+    return clean_text(text)[:limit]
+
+
+def fetch_html(url: str, timeout: int = 15) -> str | None:
+    try:
+        response = requests.get(url, timeout=timeout, headers=HTTP_HEADERS)
+        if response.status_code != 200:
+            log.warning("HTTP %s for %s", response.status_code, url)
+            return None
+        return response.text
+    except Exception as e:
+        log.warning("Failed to fetch %s: %s", url, e)
+        return None
+
+
+def first_image_from_html(value: str | None) -> str | None:
+    soup = BeautifulSoup(value or "", "html.parser")
+    img = soup.find("img")
+    return img.get("src") if img and img.get("src") else None
+
+
+def normalize_x_link(link: str) -> str:
+    match = re.search(r"/ufc/status/(\d+)", link or "", flags=re.IGNORECASE)
+    if match:
+        return f"https://x.com/ufc/status/{match.group(1)}"
+    return link
+
+
+def entry_datetime(entry: Any) -> datetime | None:
+    if hasattr(entry, "published_parsed") and entry.published_parsed:
+        return datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
+    if hasattr(entry, "updated_parsed") and entry.updated_parsed:
+        return datetime(*entry.updated_parsed[:6], tzinfo=timezone.utc)
+    return None
+
+
+def is_recent(dt: datetime | None, now: datetime, hours: int) -> bool:
+    return dt is None or now - dt <= timedelta(hours=hours)
+
+
+def parse_ufc_event_datetime(date_text: str, now: datetime) -> datetime | None:
+    date_match = re.search(r"\b([A-Z][a-z]{2}),\s+([A-Z][a-z]{2})\s+(\d{1,2})\b", date_text or "")
+    if not date_match:
+        return None
+
+    _, month_name, day = date_match.groups()
+    time_match = re.search(r"\b(\d{1,2}):(\d{2})\s*(AM|PM)\b", date_text or "", flags=re.IGNORECASE)
+    hour = 12
+    minute = 0
+    if time_match:
+        hour = int(time_match.group(1))
+        minute = int(time_match.group(2))
+        meridiem = time_match.group(3).upper()
+        if meridiem == "PM" and hour != 12:
+            hour += 12
+        elif meridiem == "AM" and hour == 12:
+            hour = 0
+
+    try:
+        parsed = datetime.strptime(
+            f"{month_name} {int(day)} {now.year} {hour}:{minute}",
+            "%b %d %Y %H:%M",
+        ).replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+    if parsed < now - timedelta(days=180):
+        parsed = parsed.replace(year=parsed.year + 1)
+    elif parsed > now + timedelta(days=180):
+        parsed = parsed.replace(year=parsed.year - 1)
+    return parsed
+
+
+def ufc_event_status(card_text: str, event_dt: datetime | None, now: datetime) -> str:
+    lowered = card_text.lower()
+    if "watch replay" in lowered or "results" in lowered:
+        return "completed"
+    if event_dt and event_dt.date() == now.date():
+        return "live"
+    if event_dt and event_dt > now:
+        return "upcoming"
+    return "completed"
+
+
 def extract_image(entry):
     if 'media_content' in entry and len(entry.media_content) > 0:
         return entry.media_content[0]['url']
@@ -107,21 +230,19 @@ def extract_image(entry):
             if link.get('type', '').startswith('image/') or link.get('rel') == 'enclosure':
                 return link.get('href')
     if 'summary' in entry:
-        soup = BeautifulSoup(entry.summary, 'html.parser')
-        img = soup.find('img')
-        if img and img.get('src'):
-            return img.get('src')
+        image = first_image_from_html(entry.summary)
+        if image:
+            return image
     if 'content' in entry and len(entry.content) > 0:
-        soup = BeautifulSoup(entry.content[0].value, 'html.parser')
-        img = soup.find('img')
-        if img and img.get('src'):
-            return img.get('src')
+        image = first_image_from_html(entry.content[0].value)
+        if image:
+            return image
             
     # Fallback to fetching original link to find og:image (Sherdog etc)
     try:
         link = getattr(entry, "link", None)
         if link:
-            res = requests.get(link, timeout=5, headers={'User-Agent': 'Mozilla/5.0'})
+            res = requests.get(link, timeout=5, headers=HTTP_HEADERS)
             if res.status_code == 200:
                 soup = BeautifulSoup(res.text, 'html.parser')
                 og = soup.find("meta", property="og:image")
@@ -131,6 +252,223 @@ def extract_image(entry):
         pass
         
     return None
+
+
+def build_rss_candidate(feed_info: dict[str, str], entry: Any) -> dict[str, Any] | None:
+    link = getattr(entry, "link", None)
+    if not link:
+        return None
+
+    title = clean_text(getattr(entry, "title", "No Title"))
+    summary_html = getattr(entry, "summary", "")
+    return {
+        "id": link,
+        "title": title,
+        "summary_text": html_to_text(summary_html, 900),
+        "link": link,
+        "image": extract_image(entry),
+        "source": feed_info["name"],
+        "tag": feed_info["tag"],
+        "lang": feed_info.get("lang", "en"),
+        "published_at": entry_datetime(entry),
+    }
+
+
+def find_rss_candidate(posted: set[str], now: datetime) -> dict[str, Any] | None:
+    feeds_copy = RSS_FEEDS.copy()
+    random.shuffle(feeds_copy)
+    log.info("Checking %s RSS feeds for new articles...", len(feeds_copy))
+
+    for feed_info in feeds_copy:
+        try:
+            feed = feedparser.parse(feed_info["url"])
+            entries = getattr(feed, "entries", [])
+            if not entries:
+                log.info("Feed %s: no entries.", feed_info["name"])
+                continue
+
+            entries_to_check = entries[:MAX_ENTRIES_PER_FEED]
+            log.info(
+                "Feed %s: found %s total entries, checking top %s",
+                feed_info["name"],
+                len(entries),
+                len(entries_to_check),
+            )
+
+            for entry in entries_to_check:
+                candidate = build_rss_candidate(feed_info, entry)
+                if not candidate:
+                    continue
+                if candidate["id"] in posted:
+                    continue
+                published_at = candidate.get("published_at")
+                if not is_recent(published_at, now, RECENT_ARTICLE_HOURS):
+                    log.info("Skipping '%s' - too old (%s)", candidate["title"], published_at)
+                    continue
+                return candidate
+        except Exception as e:
+            log.warning("Failed RSS %s: %s", feed_info["name"], e)
+
+    return None
+
+
+def find_x_social_candidate(posted: set[str], now: datetime) -> dict[str, Any] | None:
+    if not X_RSS_FEED_URLS:
+        return None
+
+    for feed_url in X_RSS_FEED_URLS:
+        try:
+            feed = feedparser.parse(feed_url)
+            entries = getattr(feed, "entries", [])
+            log.info("X feed %s: found %s entries.", feed_url, len(entries))
+
+            for entry in entries[:MAX_ENTRIES_PER_FEED]:
+                raw_link = getattr(entry, "link", "")
+                link = normalize_x_link(raw_link)
+                if not link:
+                    continue
+                if link in posted:
+                    continue
+
+                title = clean_text(getattr(entry, "title", "UFC update from X"))
+                summary_text = html_to_text(getattr(entry, "summary", ""), 900) or title
+                if "rss reader not yet whitelisted" in summary_text.lower():
+                    log.warning("X RSS bridge %s is not usable: %s", feed_url, title)
+                    continue
+
+                published_at = entry_datetime(entry)
+                if not is_recent(published_at, now, X_POST_LOOKBACK_HOURS):
+                    continue
+
+                return {
+                    "id": link,
+                    "title": f"UFC X: {title[:120]}",
+                    "summary_text": summary_text,
+                    "link": link,
+                    "image": extract_image(entry),
+                    "source": "UFC X",
+                    "tag": "#ufc #mma",
+                    "lang": "en",
+                    "published_at": published_at,
+                }
+        except Exception as e:
+            log.warning("Failed X RSS %s: %s", feed_url, e)
+
+    return None
+
+
+def extract_ufc_results(event_url: str, limit: int = 5) -> list[str]:
+    page = fetch_html(event_url)
+    if not page:
+        return []
+
+    soup = BeautifulSoup(page, "html.parser")
+    results = []
+    for fight in soup.select(".c-listing-fight")[:limit]:
+        red_name = clean_text(fight.select_one(".c-listing-fight__corner-name--red").get_text(" ", strip=True)) if fight.select_one(".c-listing-fight__corner-name--red") else ""
+        blue_name = clean_text(fight.select_one(".c-listing-fight__corner-name--blue").get_text(" ", strip=True)) if fight.select_one(".c-listing-fight__corner-name--blue") else ""
+        red_outcome = clean_text(fight.select_one(".c-listing-fight__corner--red .c-listing-fight__outcome-wrapper").get_text(" ", strip=True)) if fight.select_one(".c-listing-fight__corner--red .c-listing-fight__outcome-wrapper") else ""
+        blue_outcome = clean_text(fight.select_one(".c-listing-fight__corner--blue .c-listing-fight__outcome-wrapper").get_text(" ", strip=True)) if fight.select_one(".c-listing-fight__corner--blue .c-listing-fight__outcome-wrapper") else ""
+        method = clean_text(fight.select_one(".c-listing-fight__results--desktop .method").get_text(" ", strip=True)) if fight.select_one(".c-listing-fight__results--desktop .method") else ""
+        round_no = clean_text(fight.select_one(".c-listing-fight__results--desktop .round").get_text(" ", strip=True)) if fight.select_one(".c-listing-fight__results--desktop .round") else ""
+
+        if not red_name or not blue_name:
+            continue
+        winner = red_name if red_outcome.lower() == "win" else blue_name if blue_outcome.lower() == "win" else ""
+        result = f"{winner} def. {blue_name if winner == red_name else red_name}" if winner else f"{red_name} vs {blue_name}"
+        details = ", ".join(part for part in [method, f"R{round_no}" if round_no else ""] if part)
+        results.append(f"{result} ({details})" if details else result)
+
+    return results
+
+
+def extract_ufc_event_candidates(page_html: str, posted: set[str], now: datetime) -> list[dict[str, Any]]:
+    soup = BeautifulSoup(page_html, "html.parser")
+    candidates = []
+
+    for card in soup.select("article.c-card-event--result"):
+        title_node = card.select_one(".c-card-event--result__headline")
+        date_node = card.select_one(".c-card-event--result__date")
+        location_node = card.select_one(".c-card-event--result__location")
+        link_node = card.select_one(".c-card-event--result__headline a[href], a[href]")
+        if not title_node or not date_node or not link_node:
+            continue
+
+        title = clean_text(title_node.get_text(" ", strip=True))
+        date_text = clean_text(date_node.get_text(" ", strip=True))
+        location = clean_text(location_node.get_text(" ", strip=True)) if location_node else ""
+        link = urljoin(UFC_EVENTS_URL, link_node.get("href"))
+        card_text = clean_text(card.get_text(" ", strip=True))
+        event_dt = parse_ufc_event_datetime(date_text, now)
+        status = ufc_event_status(card_text, event_dt, now)
+        candidate_id = f"ufc-event:{status}:{link}"
+        if candidate_id in posted:
+            continue
+
+        if status == "upcoming" and event_dt and event_dt - now > timedelta(days=UFC_EVENT_LOOKAHEAD_DAYS):
+            continue
+        if status == "completed" and event_dt and now - event_dt > timedelta(hours=UFC_COMPLETED_LOOKBACK_HOURS):
+            continue
+
+        image_url = None
+        img = card.find("img")
+        if img and img.get("src"):
+            image_url = urljoin(UFC_EVENTS_URL, img.get("src"))
+
+        result_lines = extract_ufc_results(link) if status == "completed" else []
+        status_label = {
+            "upcoming": "upcoming event",
+            "live": "live/today event",
+            "completed": "completed event",
+        }.get(status, status)
+        result_text = f" Top results: {'; '.join(result_lines)}." if result_lines else ""
+        summary_text = (
+            f"Official UFC {status_label}: {title}. "
+            f"Date/time: {date_text}. "
+            f"Location: {location or 'TBA'}.{result_text}"
+        )
+
+        candidates.append({
+            "id": candidate_id,
+            "title": f"UFC {status_label}: {title}",
+            "summary_text": summary_text,
+            "link": link,
+            "image": image_url,
+            "source": "UFC Events",
+            "tag": "#ufc #mma",
+            "lang": "en",
+            "published_at": event_dt,
+        })
+
+    return candidates
+
+
+def find_ufc_event_candidate(posted: set[str], now: datetime) -> dict[str, Any] | None:
+    page = fetch_html(UFC_EVENTS_URL)
+    if not page:
+        return None
+
+    candidates = extract_ufc_event_candidates(page, posted, now)
+    log.info("UFC Events: found %s publishable candidates.", len(candidates))
+    return candidates[0] if candidates else None
+
+
+def find_selected_article(posted_list: list[str]) -> dict[str, Any] | None:
+    now = datetime.now(timezone.utc)
+    posted = set(posted_list)
+
+    for source_name, fetcher in (
+        ("UFC X", find_x_social_candidate),
+        ("UFC Events", find_ufc_event_candidate),
+        ("RSS", find_rss_candidate),
+    ):
+        candidate = fetcher(posted, now)
+        if candidate:
+            log.info("Selected %s candidate: %s", source_name, candidate["title"])
+            return candidate
+
+    return None
+
 
 async def generate_primefist_text(title, description, lang):
     client = AsyncGroq(api_key=GROQ_API_KEY)
@@ -351,6 +689,29 @@ async def send_discussion_poll(
         )
     )
 
+
+async def send_channel_post(bot: Bot, channel_id: str, image_url: str | None, text: str):
+    if image_url and len(text) <= 1024:
+        try:
+            return await bot.send_photo(
+                chat_id=channel_id,
+                photo=image_url,
+                caption=text,
+                parse_mode=ParseMode.HTML
+            )
+        except Exception as e:
+            log.warning("Photo post failed, falling back to text message: %s", e)
+    elif image_url:
+        log.info("Caption is longer than Telegram photo limit; sending text post instead.")
+
+    return await bot.send_message(
+        chat_id=channel_id,
+        text=text,
+        disable_web_page_preview=False,
+        parse_mode=ParseMode.HTML
+    )
+
+
 async def resolve_discussion_message_id_for_post(
     bot: Bot,
     channel_id: str,
@@ -411,68 +772,21 @@ async def main():
     if not os.path.exists(POSTED_FILE):
         save_posted([])
 
-    if not all([BOT_TOKEN, CHANNEL_ID, GROQ_API_KEY]):
-        log.error("Missing config. Ensure TELEGRAM_BOT_TOKEN, CHANNEL_ID, and GROQ_API_KEY are set in GitHub Secrets.")
-        return
+    missing = [
+        name for name, value in {
+            "TELEGRAM_BOT_TOKEN": BOT_TOKEN,
+            "CHANNEL_ID": CHANNEL_ID,
+            "GROQ_API_KEY": GROQ_API_KEY,
+        }.items()
+        if not value
+    ]
+    if missing:
+        raise RuntimeError(f"Missing GitHub secrets/env vars: {', '.join(missing)}")
 
     posted = load_posted()
     bot = Bot(token=BOT_TOKEN)
-    selected_article = None
-    import random
-    feeds_copy = RSS_FEEDS.copy()
-    random.shuffle(feeds_copy)
-    now = datetime.now(timezone.utc)
-    
-    log.info(f"Checking {len(feeds_copy)} feeds for new articles...")
-    
-    for feed_info in feeds_copy:
-        try:
-            feed = feedparser.parse(feed_info["url"])
-            if feed is None or not hasattr(feed, 'entries'):
-                log.warning(f"Feed {feed_info['name']} has no entries or failed to parse.")
-                continue
-            
-            entries_to_check = feed.entries[:15]
-            log.info(f"Feed {feed_info['name']}: found {len(feed.entries)} total entries, checking top {len(entries_to_check)}")
-            
-            for entry in entries_to_check:
-                link = getattr(entry, "link", None)
-                if not link:
-                    continue
-                
-                # Normalize link to avoid duplicates with different query params if needed
-                # But for now, keep it simple.
-                if link in posted:
-                    continue
-                
-                title = getattr(entry, "title", "No Title")
-                summary_html = getattr(entry, "summary", "")
-                soup = BeautifulSoup(summary_html, 'html.parser')
-                summary_text = soup.get_text()[:600] # Increased context for AI
-                
-                if hasattr(entry, 'published_parsed') and entry.published_parsed:
-                    dt = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
-                    if now - dt > timedelta(hours=48):
-                        log.info(f"Skipping '{title}' - too old ({dt})")
-                        continue
-                
-                image_url = extract_image(entry)
-                selected_article = {
-                    "title": title,
-                    "summary_text": summary_text,
-                    "link": link,
-                    "image": image_url,
-                    "source": feed_info["name"],
-                    "tag": feed_info["tag"],
-                    "lang": feed_info.get("lang", "en")
-                }
-                break
-        except Exception as e:
-            log.warning(f"Failed RSS {feed_info['name']}: {e}")
-            
-        if selected_article:
-            break
-            
+    selected_article = find_selected_article(posted)
+
     if not selected_article:
         log.info("Finished checking all feeds. No unposted/recent articles found.")
         return
@@ -482,8 +796,7 @@ async def main():
     ai_data = await generate_primefist_text(selected_article['title'], selected_article['summary_text'], selected_article['lang'])
     
     if not ai_data:
-        log.error("Failed to generate content with Groq.")
-        return
+        raise RuntimeError("Failed to generate content with Groq.")
         
     ch_text = channel_post(ai_data, selected_article["source"], selected_article["link"])
     disc_text = discussion_post(ai_data, selected_article["source"], selected_article["tag"], selected_article["link"])
@@ -496,20 +809,7 @@ async def main():
             else None
         )
 
-        if selected_article['image']:
-            msg = await bot.send_photo(
-                chat_id=CHANNEL_ID,
-                photo=selected_article['image'],
-                caption=ch_text[:1024],
-                parse_mode=ParseMode.HTML
-            )
-        else:
-            msg = await bot.send_message(
-                chat_id=CHANNEL_ID,
-                text=ch_text,
-                disable_web_page_preview=False,
-                parse_mode=ParseMode.HTML
-            )
+        msg = await send_channel_post(bot, CHANNEL_ID, selected_article.get("image"), ch_text)
             
         log.info("Successfully posted Main to Telegram!")
 
@@ -547,10 +847,15 @@ async def main():
             except Exception as e:
                 log.error(f"Failed to post comment: {e}")
         
-        posted.append(selected_article['link'])
+        posted.append(selected_article["id"])
         save_posted(posted)
     except Exception as e:
         log.error(f"Failed to post Main to Telegram: {e}")
+        raise
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except Exception as e:
+        log.exception("Bot run failed: %s", e)
+        sys.exit(1)
