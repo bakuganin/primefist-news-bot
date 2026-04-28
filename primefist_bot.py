@@ -56,6 +56,11 @@ UFC_EVENT_LOOKAHEAD_DAYS = env_int("UFC_EVENT_LOOKAHEAD_DAYS", 21)
 UFC_COMPLETED_LOOKBACK_HOURS = env_int("UFC_COMPLETED_LOOKBACK_HOURS", 72)
 MAX_TELEGRAM_VIDEO_MB = env_int("MAX_TELEGRAM_VIDEO_MB", 49)
 MAX_TELEGRAM_VIDEO_BYTES = MAX_TELEGRAM_VIDEO_MB * 1024 * 1024
+MAX_POSTS_PER_RUN = env_int("MAX_POSTS_PER_RUN", 3)
+MAX_X_POSTS_PER_RUN = env_int("MAX_X_POSTS_PER_RUN", 1)
+MAX_UFC_EVENT_POSTS_PER_RUN = env_int("MAX_UFC_EVENT_POSTS_PER_RUN", 1)
+MAX_RSS_POSTS_PER_RUN = env_int("MAX_RSS_POSTS_PER_RUN", 1)
+POST_SPACING_SECONDS = env_int("POST_SPACING_SECONDS", 8)
 UFC_EVENTS_URL = os.environ.get("UFC_EVENTS_URL", "https://www.ufc.com/events").strip()
 HTTP_HEADERS = {
     "User-Agent": (
@@ -1067,6 +1072,33 @@ def find_selected_article(posted_list: list[str]) -> dict[str, Any] | None:
     return None
 
 
+def find_run_candidates(posted_list: list[str]) -> list[dict[str, Any]]:
+    now = datetime.now(timezone.utc)
+    posted = set(posted_list)
+    candidates = []
+
+    source_plan = (
+        ("UFC X", find_x_social_candidate, MAX_X_POSTS_PER_RUN),
+        ("UFC Events", find_ufc_event_candidate, MAX_UFC_EVENT_POSTS_PER_RUN),
+        ("RSS", find_rss_candidate, MAX_RSS_POSTS_PER_RUN),
+    )
+
+    for source_name, fetcher, source_limit in source_plan:
+        for _ in range(max(0, source_limit)):
+            if len(candidates) >= MAX_POSTS_PER_RUN:
+                return candidates
+
+            candidate = fetcher(posted, now)
+            if not candidate:
+                break
+
+            candidates.append(candidate)
+            posted.add(candidate["id"])
+            log.info("Selected %s candidate: %s", source_name, candidate["title"])
+
+    return candidates
+
+
 def fallback_primefist_text(title: str, description: str, lang: str) -> dict[str, Any]:
     if title.lower().startswith("ufc x:"):
         return fallback_x_text(title, description)
@@ -1440,39 +1472,16 @@ async def send_continuation_comment(
 # ==========================================
 # MAIN
 # ==========================================
-async def main():
-    # Create empty posted.json if it doesn't exist to prevent git push errors
-    if not os.path.exists(POSTED_FILE):
-        save_posted([])
-
-    missing = [
-        name for name, value in {
-            "TELEGRAM_BOT_TOKEN": BOT_TOKEN,
-            "CHANNEL_ID": CHANNEL_ID,
-        }.items()
-        if not value
-    ]
-    if missing:
-        raise RuntimeError(f"Missing GitHub secrets/env vars: {', '.join(missing)}")
-
-    posted = load_posted()
-    bot = Bot(token=BOT_TOKEN)
-    selected_article = find_selected_article(posted)
-
-    if not selected_article:
-        log.info("Finished checking all feeds. No unposted/recent articles found.")
-        return
-
-        
+async def publish_article(bot: Bot, posted: list[str], selected_article: dict[str, Any]) -> None:
     log.info(f"Selected article: {selected_article['title']}")
     ai_data = await generate_primefist_text(selected_article['title'], selected_article['summary_text'], selected_article['lang'])
-    
+
     if not ai_data:
         raise RuntimeError("Failed to generate content with Groq.")
-        
+
     ch_text = channel_post(ai_data, selected_article["source"], selected_article["link"])
     disc_text = discussion_post(ai_data, selected_article["source"], selected_article["tag"], selected_article["link"])
-    
+
     try:
         discussion_chat_id = await resolve_discussion_chat_id(bot, CHANNEL_ID)
         discussion_update_offset = (
@@ -1488,7 +1497,7 @@ async def main():
             ch_text,
             selected_article.get("video_source"),
         )
-            
+
         log.info("Successfully posted Main to Telegram!")
 
         discussion_message_id = None
@@ -1502,8 +1511,7 @@ async def main():
             )
         except Exception as e:
             log.error(f"Failed to find discussion thread: {e}")
-        
-        # Send poll to the same discussion thread first if AI generated it.
+
         poll_q = ai_data.get("poll_question", "").strip()
         poll_opts = ai_data.get("poll_options", [])
         if poll_q and isinstance(poll_opts, list) and len(poll_opts) >= 2:
@@ -1524,12 +1532,43 @@ async def main():
                 log.info("Successfully posted comment (full story)!")
             except Exception as e:
                 log.error(f"Failed to post comment: {e}")
-        
+
         posted.append(selected_article["id"])
         save_posted(posted)
     except Exception as e:
         log.error(f"Failed to post Main to Telegram: {e}")
         raise
+
+
+async def main():
+    # Create empty posted.json if it doesn't exist to prevent git push errors
+    if not os.path.exists(POSTED_FILE):
+        save_posted([])
+
+    missing = [
+        name for name, value in {
+            "TELEGRAM_BOT_TOKEN": BOT_TOKEN,
+            "CHANNEL_ID": CHANNEL_ID,
+        }.items()
+        if not value
+    ]
+    if missing:
+        raise RuntimeError(f"Missing GitHub secrets/env vars: {', '.join(missing)}")
+
+    posted = load_posted()
+    bot = Bot(token=BOT_TOKEN)
+    selected_articles = find_run_candidates(posted)
+
+    if not selected_articles:
+        log.info("Finished checking all feeds. No unposted/recent articles found.")
+        return
+
+    log.info("Publishing %s balanced candidates this run.", len(selected_articles))
+    for index, selected_article in enumerate(selected_articles, start=1):
+        await publish_article(bot, posted, selected_article)
+        if index < len(selected_articles) and POST_SPACING_SECONDS > 0:
+            log.info("Waiting %s seconds before next post.", POST_SPACING_SECONDS)
+            await asyncio.sleep(POST_SPACING_SECONDS)
 
 if __name__ == "__main__":
     try:

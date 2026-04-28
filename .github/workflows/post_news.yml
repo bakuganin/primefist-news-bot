@@ -5,7 +5,7 @@ on:
     paths-ignore:
       - 'posted.json'
   schedule:
-    - cron: '*/30 * * * *' # Every 30 minutes
+    - cron: '*/15 * * * *' # Every 15 minutes
   workflow_dispatch: # Allow manual trigger
 
 jobs:

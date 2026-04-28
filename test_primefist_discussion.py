@@ -286,6 +286,58 @@ class SourceCandidateTest(unittest.TestCase):
 
         self.assertEqual(summary, "Jack Della Maddalena vs Carlos Prates (Welterweight Bout)")
 
+    def test_run_candidates_are_balanced_across_sources(self):
+        def candidate(article_id, source):
+            return {
+                "id": article_id,
+                "title": article_id,
+                "summary_text": article_id,
+                "link": f"https://example.com/{article_id}",
+                "image": None,
+                "source": source,
+                "tag": "#mma",
+                "lang": "en",
+            }
+
+        x_item = candidate("x-1", "UFC X")
+        event_item = candidate("event-1", "UFC Events")
+        rss_item = candidate("rss-1", "RSS")
+
+        with patch.object(bot_module, "MAX_POSTS_PER_RUN", 3), \
+             patch.object(bot_module, "MAX_X_POSTS_PER_RUN", 1), \
+             patch.object(bot_module, "MAX_UFC_EVENT_POSTS_PER_RUN", 1), \
+             patch.object(bot_module, "MAX_RSS_POSTS_PER_RUN", 1), \
+             patch.object(bot_module, "find_x_social_candidate", side_effect=lambda posted, now: None if "x-1" in posted else x_item), \
+             patch.object(bot_module, "find_ufc_event_candidate", side_effect=lambda posted, now: None if "event-1" in posted else event_item), \
+             patch.object(bot_module, "find_rss_candidate", side_effect=lambda posted, now: None if "rss-1" in posted else rss_item):
+            candidates = bot_module.find_run_candidates([])
+
+        self.assertEqual([item["id"] for item in candidates], ["x-1", "event-1", "rss-1"])
+
+    def test_run_candidates_respect_total_post_limit(self):
+        def candidate(article_id, source):
+            return {
+                "id": article_id,
+                "title": article_id,
+                "summary_text": article_id,
+                "link": f"https://example.com/{article_id}",
+                "image": None,
+                "source": source,
+                "tag": "#mma",
+                "lang": "en",
+            }
+
+        with patch.object(bot_module, "MAX_POSTS_PER_RUN", 2), \
+             patch.object(bot_module, "MAX_X_POSTS_PER_RUN", 1), \
+             patch.object(bot_module, "MAX_UFC_EVENT_POSTS_PER_RUN", 1), \
+             patch.object(bot_module, "MAX_RSS_POSTS_PER_RUN", 1), \
+             patch.object(bot_module, "find_x_social_candidate", return_value=candidate("x-1", "UFC X")), \
+             patch.object(bot_module, "find_ufc_event_candidate", return_value=candidate("event-1", "UFC Events")), \
+             patch.object(bot_module, "find_rss_candidate", return_value=candidate("rss-1", "RSS")):
+            candidates = bot_module.find_run_candidates([])
+
+        self.assertEqual([item["id"] for item in candidates], ["x-1", "event-1"])
+
 
 if __name__ == "__main__":
     unittest.main()
