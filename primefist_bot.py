@@ -430,16 +430,9 @@ def fallback_x_text(title: str, description: str) -> dict[str, Any]:
         short_ru = f"{short_ru} Детали эфира: {broadcast_note}."
         short_en = f"{short_en} Broadcast note: {broadcast_note}."
 
-    full_ru = (
-        f"{short_ru}\n\n"
-        "Главный смысл публикации: UFC не просто сообщает расписание, а продвигает конкретный сюжет боя, "
-        "показывая настроение бойцов и атмосферу перед ивентом."
-    )
-    full_en = (
-        f"{short_en}\n\n"
-        "The key point is that UFC is using the post as fight-week promotion, highlighting the matchup, "
-        "the location, and the story around the athletes before the event."
-    )
+    full_ru = f"{short_ru}"
+    full_en = f"{short_en}"
+
 
     return {
         "hook_ru": compact_for_post(hook_ru, 95),
@@ -620,15 +613,13 @@ def fallback_ufc_event_text(title: str, description: str) -> dict[str, Any]:
         f"UFC проведет турнир в {location_ru}. Главный бой вечера — {main_fight_ru}.\n\n"
         f"Дата и время: {date_ru}.\n"
         f"Место: {location_ru}.\n\n"
-        f"Главные бои:\n{fight_list_ru or 'Кард уточняется.'}\n\n"
-        "Это анонс ближайшего турнира: главный акцент сделан на центральной паре вечера и нескольких заметных боях основного карда."
+        f"Главные бои:\n{fight_list_ru or 'Кард уточняется.'}"
     )
     full_en = (
         f"UFC is heading to {location_en} with {main_fight_en} as the featured matchup.\n\n"
         f"Date/time: {date_text or 'TBA'}.\n"
         f"Venue: {location_en}.\n\n"
-        f"Main card:\n{fight_list_en or 'The card is still being updated.'}\n\n"
-        "This is an official event announcement focused on the headline bout and the key matchups currently listed for the card."
+        f"Main card:\n{fight_list_en or 'The card is still being updated.'}"
     )
 
     return {
@@ -1234,40 +1225,20 @@ def fallback_rss_text(title: str, description: str, lang: str) -> dict[str, Any]
         return fallback_cage_warriors_text(title_text, cleaned)
 
     if lang == "ru":
-        hook_ru = compact_for_post(title_text, 95)
+        hook_ru = translate_matchup_ru(title_text)
         short_ru = compact_multiline(cleaned or title_text, 330)
         full_ru = compact_multiline(cleaned or title_text, 1600)
-        hook_en = "Combat sports update"
-        short_en = (
-            f"A new combat sports story is live.\n\n"
-            f"Main point: {compact_for_post(cleaned or title_text, 220)}"
-        )
-        full_en = (
-            f"A new combat sports story is live.\n\n"
-            f"Main point: {compact_for_post(cleaned or title_text, 800)}"
-        )
-    else:
-        topic_ru = russian_topic_from_title(title_text, cleaned)
-        hook_ru = f"Главное из {topic_ru}: новая история"
         hook_en = compact_for_post(title_text, 95)
-        short_ru = (
-            f"В {topic_ru} появилась новая тема, которую стоит отметить.\n\n"
-            "В канале оставляю короткий вывод без длинного сырого текста; подробный разбор уходит в комментарий."
-        )
-        short_en = (
-            f"{compact_for_post(cleaned or title_text, 220)}\n\n"
-            "Full context is in the comment thread."
-        )
-        full_ru = (
-            f"Источник сообщил новую историю по теме: {compact_for_post(title_text, 180)}.\n\n"
-            "Суть новости вынесена в короткий пост, а здесь остается полный контекст: "
-            f"{compact_for_post(cleaned or title_text, 850)}\n\n"
-            "Текст очищен от RSS-хвостов и служебных фраз, чтобы комментарий читался как нормальная заметка."
-        )
-        full_en = (
-            f"{compact_for_post(cleaned or title_text, 900)}\n\n"
-            "The RSS boilerplate was removed so the comment reads like a clean story summary."
-        )
+        short_en = compact_multiline(cleaned or title_text, 330)
+        full_en = compact_multiline(cleaned or title_text, 1600)
+    else:
+        hook_ru = translate_matchup_ru(title_text)
+        hook_en = compact_for_post(title_text, 95)
+        short_ru = compact_multiline(cleaned or title_text, 330)
+        short_en = compact_multiline(cleaned or title_text, 330)
+        full_ru = compact_multiline(cleaned or title_text, 1600)
+        full_en = compact_multiline(cleaned or title_text, 1600)
+
 
     return {
         "hook_ru": compact_for_post(hook_ru, 95),
@@ -1302,6 +1273,8 @@ async def generate_primefist_text(title, description, lang):
 Заголовок: {title}
 Описание: {description}
 Язык источника: {lang}
+
+ВАЖНО: Пиши только про саму новость. НЕ используй фразы типа "Источник сообщил", "Суть новости вынесена", "Текст очищен", "В единоборствах появилась новая тема" или любые другие вводные слова о процессе обработки новости. Пиши сразу по существу.
 
 Верни ТОЛЬКО валидный JSON без markdown и без пояснений:
 
