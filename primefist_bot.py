@@ -166,6 +166,14 @@ def normalize_x_link(link: str) -> str:
     return link
 
 
+def compact_for_post(text: str, max_len: int = 420) -> str:
+    text = clean_text(text)
+    if len(text) <= max_len:
+        return text
+    trimmed = text[:max_len].rsplit(" ", 1)[0].rstrip(".,;: ")
+    return f"{trimmed}..."
+
+
 def entry_datetime(entry: Any) -> datetime | None:
     if hasattr(entry, "published_parsed") and entry.published_parsed:
         return datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
@@ -470,7 +478,42 @@ def find_selected_article(posted_list: list[str]) -> dict[str, Any] | None:
     return None
 
 
+def fallback_primefist_text(title: str, description: str, lang: str) -> dict[str, Any]:
+    base = compact_for_post(description or title, 360)
+    title_text = compact_for_post(title, 110)
+
+    if lang == "ru":
+        hook_ru = title_text
+        short_ru = base
+        full_ru = compact_for_post(description or title, 900)
+        hook_en = "Combat sports update"
+        short_en = "A fresh combat sports update is now available from the source."
+        full_en = "A fresh combat sports update is now available from the source. Open the original link for full details and context."
+    else:
+        hook_ru = "Свежая новость из мира единоборств"
+        short_ru = "Появилось новое обновление по MMA, UFC или боксу. Подробности доступны в источнике."
+        full_ru = "Появилось новое обновление по MMA, UFC или боксу. Откройте оригинальный материал, чтобы посмотреть все детали и контекст."
+        hook_en = title_text
+        short_en = base
+        full_en = compact_for_post(description or title, 900)
+
+    return {
+        "hook_ru": hook_ru,
+        "hook_en": hook_en,
+        "short_ru": short_ru,
+        "short_en": short_en,
+        "full_ru": full_ru,
+        "full_en": full_en,
+        "poll_question": "",
+        "poll_options": [],
+    }
+
+
 async def generate_primefist_text(title, description, lang):
+    if not GROQ_API_KEY:
+        log.warning("GROQ_API_KEY is not configured; using fallback post text.")
+        return fallback_primefist_text(title, description, lang)
+
     client = AsyncGroq(api_key=GROQ_API_KEY)
     prompt = f"""Ты редактор Telegram-канала PRIMEFIST (единоборства: MMA, бокс, K1, кикбокс, тай бокс).
 
@@ -501,10 +544,16 @@ async def generate_primefist_text(title, description, lang):
         )
         raw = response.choices[0].message.content.strip()
         raw = re.sub(r"```json|```", "", raw).strip()
-        return json.loads(raw)
+        data = json.loads(raw)
+        required = {"hook_ru", "hook_en", "short_ru", "short_en", "full_ru", "full_en"}
+        if not required.issubset(data):
+            missing = ", ".join(sorted(required - set(data)))
+            raise ValueError(f"Groq response missing required fields: {missing}")
+        return data
     except Exception as e:
         log.error(f"Groq API error: {e}")
-        return None
+        log.warning("Using fallback post text because Groq generation failed.")
+        return fallback_primefist_text(title, description, lang)
 
 def channel_post(ai_data: dict, source: str, link: str) -> str:
     """Короткий пост для канала."""
@@ -776,7 +825,6 @@ async def main():
         name for name, value in {
             "TELEGRAM_BOT_TOKEN": BOT_TOKEN,
             "CHANNEL_ID": CHANNEL_ID,
-            "GROQ_API_KEY": GROQ_API_KEY,
         }.items()
         if not value
     ]

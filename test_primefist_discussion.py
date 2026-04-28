@@ -139,6 +139,18 @@ class SourceCandidateTest(unittest.TestCase):
             "https://x.com/ufc/status/12345"
         )
 
+    def test_fallback_primefist_text_has_required_fields(self):
+        data = bot_module.fallback_primefist_text(
+            "UFC X: Big update",
+            "A fresh update from the official UFC account.",
+            "en"
+        )
+
+        for key in ("hook_ru", "hook_en", "short_ru", "short_en", "full_ru", "full_en"):
+            self.assertTrue(data[key])
+        self.assertEqual(data["poll_question"], "")
+        self.assertEqual(data["poll_options"], [])
+
     def test_ufc_event_candidate_is_extracted_from_card_html(self):
         html = """
         <article class="c-card-event--result">
