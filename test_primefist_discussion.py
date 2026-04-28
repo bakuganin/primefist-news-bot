@@ -6,13 +6,15 @@ import primefist_bot as bot_module
 
 
 class FakeBot:
-    def __init__(self, updates, photo_error=None):
+    def __init__(self, updates, photo_error=None, video_error=None):
         self.updates = list(updates)
         self.photo_error = photo_error
+        self.video_error = video_error
         self.get_updates_calls = []
         self.sent_messages = []
         self.sent_polls = []
         self.sent_photos = []
+        self.sent_videos = []
 
     async def get_updates(self, **kwargs):
         self.get_updates_calls.append(kwargs)
@@ -33,6 +35,12 @@ class FakeBot:
         if self.photo_error:
             raise self.photo_error
         return SimpleNamespace(message_id=1001)
+
+    async def send_video(self, **kwargs):
+        self.sent_videos.append(kwargs)
+        if self.video_error:
+            raise self.video_error
+        return SimpleNamespace(message_id=1002)
 
 
 class DiscussionCommentTest(unittest.IsolatedAsyncioTestCase):
@@ -131,6 +139,23 @@ class DiscussionCommentTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(fake_bot.sent_messages), 1)
         self.assertEqual(fake_bot.sent_messages[0]["text"], "<b>Post</b>")
 
+    async def test_channel_post_prefers_video_over_photo(self):
+        fake_bot = FakeBot([])
+
+        sent = await bot_module.send_channel_post(
+            fake_bot,
+            "-1003902344210",
+            "https://example.com/image.jpg",
+            "<b>Post</b>",
+            "https://video.twimg.com/test.mp4"
+        )
+
+        self.assertEqual(sent.message_id, 1002)
+        self.assertEqual(len(fake_bot.sent_videos), 1)
+        self.assertEqual(fake_bot.sent_videos[0]["video"], "https://video.twimg.com/test.mp4")
+        self.assertEqual(fake_bot.sent_photos, [])
+        self.assertEqual(fake_bot.sent_messages, [])
+
 
 class SourceCandidateTest(unittest.TestCase):
     def test_nitter_link_is_normalized_to_x(self):
@@ -150,6 +175,19 @@ class SourceCandidateTest(unittest.TestCase):
             self.assertTrue(data[key])
         self.assertEqual(data["poll_question"], "")
         self.assertEqual(data["poll_options"], [])
+
+    def test_fallback_x_text_uses_specific_story_not_generic_link_copy(self):
+        data = bot_module.fallback_primefist_text(
+            'UFC X: "Perfect shot, perfection combination." @ErcegSteve is preparing for a hometown #UFCPerth win this weekend!',
+            '"Perfect shot, perfection combination." @ErcegSteve is preparing for a hometown #UFCPerth win this weekend! [ May 2 at 7amET | LIVE on @ParamountPlus ] Video',
+            "en"
+        )
+
+        self.assertIn("Эрцег", data["hook_ru"])
+        self.assertIn("Erceg", data["hook_en"])
+        self.assertIn("Стив Эрцег", data["short_ru"])
+        self.assertIn("Steve Erceg", data["short_en"])
+        self.assertNotIn("Откройте оригинальный", data["full_ru"])
 
     def test_ufc_event_candidate_is_extracted_from_card_html(self):
         html = """

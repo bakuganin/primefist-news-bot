@@ -61,6 +61,20 @@ HTTP_HEADERS = {
 }
 telegram_update_offset = None
 
+HANDLE_NAMES = {
+    "ercegsteve": ("Стив Эрцег", "Steve Erceg"),
+    "thenightmare170": ("Карлос Пратес", "Carlos Prates"),
+    "quillansalkilld": ("Куиллан Салкилд", "Quillan Salkilld"),
+    "beneildariush": ("Бенеил Дариуш", "Beneil Dariush"),
+    "westAustralia".lower(): ("Western Australia", "Western Australia"),
+    "paramountplus": ("Paramount+", "Paramount+"),
+}
+
+HASHTAG_NAMES = {
+    "ufcperth": ("UFC Perth", "UFC Perth"),
+    "wathedreamstate": ("WA The Dream State", "WA The Dream State"),
+}
+
 # THEIR RSS FEEDS LIST
 RSS_FEEDS = [
     {"name": "MMA Fighting", "url": "https://www.mmafighting.com/rss/current", "tag": "#mma", "lang": "en"},
@@ -172,6 +186,181 @@ def compact_for_post(text: str, max_len: int = 420) -> str:
         return text
     trimmed = text[:max_len].rsplit(" ", 1)[0].rstrip(".,;: ")
     return f"{trimmed}..."
+
+
+def social_text_without_media_label(text: str) -> str:
+    text = clean_text(text)
+    text = re.sub(r"\s+(Video|Photo|GIF)\s*$", "", text, flags=re.IGNORECASE)
+    return clean_text(text)
+
+
+def handle_name(handle: str, lang: str) -> str:
+    names = HANDLE_NAMES.get(handle.lower())
+    if names:
+        return names[0] if lang == "ru" else names[1]
+    return f"@{handle}"
+
+
+def hashtag_name(tag: str, lang: str) -> str:
+    names = HASHTAG_NAMES.get(tag.lower())
+    if names:
+        return names[0] if lang == "ru" else names[1]
+    return f"#{tag}"
+
+
+def readable_social_text(text: str, lang: str = "en") -> str:
+    text = social_text_without_media_label(text)
+    text = re.sub(
+        r"@([A-Za-z0-9_]+)",
+        lambda match: handle_name(match.group(1), lang),
+        text,
+    )
+    text = re.sub(
+        r"#([A-Za-z0-9_]+)",
+        lambda match: hashtag_name(match.group(1), lang),
+        text,
+    )
+    text = re.sub(r"\[\s*", "[", text)
+    text = re.sub(r"\s*\]", "]", text)
+    return clean_text(text)
+
+
+def social_title(title: str) -> str:
+    title = re.sub(r"^UFC X:\s*", "", title or "", flags=re.IGNORECASE)
+    return social_text_without_media_label(title)
+
+
+def social_event(text: str) -> str:
+    match = re.search(r"#(UFC[A-Za-z0-9_]+)", text or "")
+    if match:
+        return hashtag_name(match.group(1), "en")
+    return "UFC"
+
+
+def extract_broadcast_note(text: str) -> str:
+    match = re.search(r"\[(.+?)\]", text or "")
+    if not match:
+        return ""
+    note = readable_social_text(match.group(1), "en")
+    note = note.replace("|", " | ")
+    return clean_text(note)
+
+
+def fallback_x_text(title: str, description: str) -> dict[str, Any]:
+    source_text = social_text_without_media_label(description or social_title(title))
+    title_text = social_title(title)
+    readable_en = readable_social_text(source_text or title_text, "en")
+    event = social_event(source_text or title_text)
+    broadcast_note = extract_broadcast_note(source_text)
+
+    erceg_match = re.search(r"@ErcegSteve|Steve Erceg", source_text, flags=re.IGNORECASE)
+    faceoff_match = re.search(
+        r"Facing off in Perth.*?(Jack Della Maddalena).*?(?:@thenightmare170|Carlos Prates)",
+        source_text,
+        flags=re.IGNORECASE,
+    )
+
+    if erceg_match:
+        hook_ru = "Эрцег заряжен на домашний бой в Перте"
+        hook_en = "Erceg targets a hometown UFC Perth win"
+        short_ru = (
+            f"Стив Эрцег готовится к домашнему выступлению на {event} в эти выходные. "
+            "UFC показывает его настрой перед турниром в Перте и делает акцент на шанс порадовать своих болельщиков."
+        )
+        short_en = (
+            f"Steve Erceg is preparing for a hometown win at {event} this weekend. "
+            "UFC is pushing his Perth storyline as fight week builds toward the card."
+        )
+    elif faceoff_match:
+        hook_ru = "Делла Маддалена и Пратес сошлись лицом к лицу"
+        hook_en = "Della Maddalena and Prates face off in Perth"
+        short_ru = (
+            f"Джек Делла Маддалена и Карлос Пратес встретились лицом к лицу в Перте перед {event}. "
+            "UFC подогревает интерес к их противостоянию и напоминает о ближайшем турнире."
+        )
+        short_en = (
+            f"Jack Della Maddalena and Carlos Prates faced off in Perth ahead of {event}. "
+            "UFC is building attention around their matchup as the event gets closer."
+        )
+    else:
+        hook_en = compact_for_post(readable_en, 95)
+        hook_ru = f"UFC подогревает интерес к {event}"
+        short_ru = (
+            f"Официальный аккаунт UFC выпустил обновление перед {event}: {readable_social_text(source_text, 'ru')}. "
+            "Это промо к ближайшему турниру и одному из ключевых сюжетов недели."
+        )
+        short_en = readable_en
+
+    if broadcast_note:
+        short_ru = f"{short_ru} Детали эфира: {broadcast_note}."
+        short_en = f"{short_en} Broadcast note: {broadcast_note}."
+
+    full_ru = (
+        f"{short_ru}\n\n"
+        "Главный смысл публикации: UFC не просто сообщает расписание, а продвигает конкретный сюжет боя, "
+        "показывая настроение бойцов и атмосферу перед ивентом."
+    )
+    full_en = (
+        f"{short_en}\n\n"
+        "The key point is that UFC is using the post as fight-week promotion, highlighting the matchup, "
+        "the location, and the story around the athletes before the event."
+    )
+
+    return {
+        "hook_ru": compact_for_post(hook_ru, 95),
+        "hook_en": compact_for_post(hook_en, 95),
+        "short_ru": compact_for_post(short_ru, 520),
+        "short_en": compact_for_post(short_en, 520),
+        "full_ru": compact_for_post(full_ru, 950),
+        "full_en": compact_for_post(full_en, 950),
+        "poll_question": "",
+        "poll_options": [],
+    }
+
+
+def extract_x_video_url(link: str) -> str | None:
+    if not link:
+        return None
+    try:
+        from yt_dlp import YoutubeDL
+    except Exception as e:
+        log.warning("yt-dlp is not available; cannot extract X video: %s", e)
+        return None
+
+    try:
+        with YoutubeDL({
+            "quiet": True,
+            "no_warnings": True,
+            "skip_download": True,
+            "format": "best[ext=mp4]/best",
+        }) as ydl:
+            info = ydl.extract_info(link, download=False)
+
+        formats = [
+            fmt for fmt in info.get("formats", [])
+            if fmt.get("url")
+            and fmt.get("ext") == "mp4"
+            and ".mp4" in fmt.get("url", "")
+            and ".m3u8" not in fmt.get("url", "")
+        ]
+        if formats:
+            best = max(
+                formats,
+                key=lambda fmt: (
+                    fmt.get("height") or 0,
+                    fmt.get("tbr") or 0,
+                    fmt.get("filesize") or fmt.get("filesize_approx") or 0,
+                ),
+            )
+            return best["url"]
+
+        direct_url = info.get("url")
+        if direct_url and ".mp4" in direct_url:
+            return direct_url
+    except Exception as e:
+        log.warning("Could not extract X video for %s: %s", link, e)
+
+    return None
 
 
 def entry_datetime(entry: Any) -> datetime | None:
@@ -348,12 +537,16 @@ def find_x_social_candidate(posted: set[str], now: datetime) -> dict[str, Any] |
                 if not is_recent(published_at, now, X_POST_LOOKBACK_HOURS):
                     continue
 
+                has_video = "video" in getattr(entry, "summary", "").lower()
+                video_url = extract_x_video_url(link) if has_video else None
+
                 return {
                     "id": link,
                     "title": f"UFC X: {title[:120]}",
                     "summary_text": summary_text,
                     "link": link,
                     "image": extract_image(entry),
+                    "video": video_url,
                     "source": "UFC X",
                     "tag": "#ufc #mma",
                     "lang": "en",
@@ -479,6 +672,9 @@ def find_selected_article(posted_list: list[str]) -> dict[str, Any] | None:
 
 
 def fallback_primefist_text(title: str, description: str, lang: str) -> dict[str, Any]:
+    if title.lower().startswith("ufc x:"):
+        return fallback_x_text(title, description)
+
     base = compact_for_post(description or title, 360)
     title_text = compact_for_post(title, 110)
 
@@ -487,12 +683,12 @@ def fallback_primefist_text(title: str, description: str, lang: str) -> dict[str
         short_ru = base
         full_ru = compact_for_post(description or title, 900)
         hook_en = "Combat sports update"
-        short_en = "A fresh combat sports update is now available from the source."
-        full_en = "A fresh combat sports update is now available from the source. Open the original link for full details and context."
+        short_en = f"New combat sports update: {base}"
+        full_en = f"New combat sports update: {compact_for_post(description or title, 900)}"
     else:
-        hook_ru = "Свежая новость из мира единоборств"
-        short_ru = "Появилось новое обновление по MMA, UFC или боксу. Подробности доступны в источнике."
-        full_ru = "Появилось новое обновление по MMA, UFC или боксу. Откройте оригинальный материал, чтобы посмотреть все детали и контекст."
+        hook_ru = f"Главное: {compact_for_post(title, 80)}"
+        short_ru = f"Вышло обновление по теме: {base}"
+        full_ru = f"Вышло обновление по теме: {compact_for_post(description or title, 900)}"
         hook_en = title_text
         short_en = base
         full_en = compact_for_post(description or title, 900)
@@ -570,7 +766,7 @@ def channel_post(ai_data: dict, source: str, link: str) -> str:
 def discussion_post(ai_data: dict, source: str, tag: str, link: str) -> str:
     """Полный пост для комментариев."""
     return (
-        f"📖 Полная новость / Full story\n\n"
+        f"<b>🥊 {html.escape(ai_data['hook_ru'])} / {html.escape(ai_data['hook_en'])}</b>\n\n"
         f"🇷🇺 {html.escape(ai_data['full_ru'])}\n\n"
         f"───────────────────\n\n"
         f"🇬🇧 {html.escape(ai_data['full_en'])}\n\n"
@@ -739,7 +935,27 @@ async def send_discussion_poll(
     )
 
 
-async def send_channel_post(bot: Bot, channel_id: str, image_url: str | None, text: str):
+async def send_channel_post(
+    bot: Bot,
+    channel_id: str,
+    image_url: str | None,
+    text: str,
+    video_url: str | None = None,
+):
+    if video_url and len(text) <= 1024:
+        try:
+            return await bot.send_video(
+                chat_id=channel_id,
+                video=video_url,
+                caption=text,
+                parse_mode=ParseMode.HTML,
+                supports_streaming=True,
+            )
+        except Exception as e:
+            log.warning("Video post failed, falling back to photo/text: %s", e)
+    elif video_url:
+        log.info("Caption is longer than Telegram video limit; sending photo/text post instead.")
+
     if image_url and len(text) <= 1024:
         try:
             return await bot.send_photo(
@@ -857,7 +1073,13 @@ async def main():
             else None
         )
 
-        msg = await send_channel_post(bot, CHANNEL_ID, selected_article.get("image"), ch_text)
+        msg = await send_channel_post(
+            bot,
+            CHANNEL_ID,
+            selected_article.get("image"),
+            ch_text,
+            selected_article.get("video"),
+        )
             
         log.info("Successfully posted Main to Telegram!")
 
