@@ -1339,25 +1339,36 @@ async def generate_primefist_text(title, description, lang):
 Язык источника: {lang}
 
 ЗАДАЧА:
-1. Создай короткий хук и тизер для основного канала.
-2. Создай подробную статью для комментариев.
-3. ВАЖНО: Хук и текст на английском должны быть КАЧЕСТВЕННЫМ ПЕРЕВОДОМ или адаптацией, а не просто копией русского текста.
-4. ВАЖНО: Используй двойные переносы строк (\n\n) между абзацами. Текст не должен быть "стеной".
+1. Создай КРАТКИЙ ТИЗЕР-АНОНС для канала и ПОДРОБНУЮ СТАТЬЮ для комментариев.
+2. ТИЗЕР (short_ru/short_en):
+   - Должен быть коротким (СТРОГО 200-240 символов).
+   - Это "крючок": завлеки читателя, не пересказывая всю статью.
+   - Должен ОТЛИЧАТЬСЯ от начала подробной статьи.
+3. ПОДРОБНАЯ СТАТЬЯ (full_ru/full_en):
+   - Нет ограничений по длине (но старайся уложиться в 5-8 предложений на язык).
+   - ОБЯЗАТЕЛЬНО разделяй на 3-5 абзацев, используя ДВОЙНОЙ ПЕРЕНОС СТРОКИ (\n\n).
+   - Текст не должен быть "стеной". Читаемость — приоритет.
+4. ЯЗЫК:
+   - Поля RU — строго на русском.
+   - Поля EN — строго на английском (качественный перевод/адаптация). 
+   - НИКАКОГО РУССКОГО в полях *_en!
 
 Верни ТОЛЬКО валидный JSON без markdown и без пояснений:
 
 {{
-  "hook_ru": "Короткий дерзкий хук RU (макс 10 слов).",
-  "hook_en": "Short punchy hook EN (translated/adapted).",
-  "short_ru": "Тизер на 1-2 предложения RU. Интрига.",
-  "short_en": "Teaser 1-2 sentences EN.",
-  "full_hook_ru": "Более развернутый и солидный заголовок статьи RU (можно до 20 слов).",
-  "full_hook_en": "Detailed article headline EN.",
-  "full_ru": "Подробная статья RU (5-10 предложений). Обязательно 3-4 абзаца, разделенных \n\n. Раскрой детали новости.",
-  "full_en": "Detailed article EN. 5-10 sentences. 3-4 paragraphs with \n\n. Provide context.",
+  "hook_ru": "Дерзкий хук RU (макс 10 слов).",
+  "hook_en": "Punchy hook EN (English only).",
+  "short_ru": "Тизер RU (200-240 симв). Краткий анонс-интрига.",
+  "short_en": "Teaser EN (200-240 symb). English only.",
+  "full_hook_ru": "Длинный развернутый заголовок статьи RU.",
+  "full_hook_en": "Detailed headline for the article EN.",
+  "full_ru": "Подробная статья RU. С деталями и контекстом.\n\nРазделенная на абзацы вот так.\n\nИ вот так.",
+  "full_en": "Detailed article EN (English only).\n\nWith clear paragraphs.\n\nLike this.",
   "poll_question": "Вопрос для опроса RU.",
   "poll_options": ["Вариант 1", "Вариант 2"]
 }}"""
+
+
 
 
     try:
@@ -1365,7 +1376,7 @@ async def generate_primefist_text(title, description, lang):
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.7,
-            max_tokens=600
+            max_tokens=1500
         )
         raw = response.choices[0].message.content.strip()
         raw = re.sub(r"```json|```", "", raw).strip()
@@ -1395,6 +1406,13 @@ def channel_post(ai_data: dict, source: str, link: str) -> str:
     short_ru = ai_data.get("short_ru", "").strip()
     short_en = ai_data.get("short_en", "").strip()
     
+    # Force truncate to ensure user's request is met even if AI fails length instruction
+    # User requested 220-240, let's use 260 as a safe hard cap
+    if len(short_ru) > 260:
+        short_ru = short_ru[:257] + "..."
+    if len(short_en) > 260:
+        short_en = short_en[:257] + "..."
+
     return (
         f"<b>🥊 {html.escape(hook_ru)} / {html.escape(hook_en)}</b>\n\n"
         f"🇷🇺 {html.escape(short_ru)}\n\n"
@@ -1405,12 +1423,19 @@ def channel_post(ai_data: dict, source: str, link: str) -> str:
     )
 
 
+
 def discussion_post(ai_data: dict, source: str, tag: str, link: str) -> str:
     """Полный пост для комментариев с подробной статьей."""
     full_hook_ru = ai_data.get("full_hook_ru", ai_data.get("hook_ru", "Статья")).strip()
     full_hook_en = ai_data.get("full_hook_en", ai_data.get("hook_en", "Article")).strip()
     full_ru = ai_data.get("full_ru", "").strip()
     full_en = ai_data.get("full_en", "").strip()
+
+    # Safety truncation for Telegram 4096 limit (total message)
+    if len(full_ru) > 1800:
+        full_ru = full_ru[:1797] + "..."
+    if len(full_en) > 1800:
+        full_en = full_en[:1797] + "..."
 
     return (
         f"<b>🥊 {html.escape(full_hook_ru)} / {html.escape(full_hook_en)}</b>\n\n"
@@ -1421,6 +1446,7 @@ def discussion_post(ai_data: dict, source: str, tag: str, link: str) -> str:
         f"📌 Source: {html.escape(source)}\n\n"
         f"{html.escape(tag)} #primefist"
     )
+
 
 
 def parse_chat_id(value: str) -> int | str:
