@@ -1331,53 +1331,50 @@ async def generate_primefist_text(title, description, lang):
         return fallback_primefist_text(title, description, lang)
 
     client = AsyncGroq(api_key=GROQ_API_KEY)
-    prompt = f"""Ты редактор Telegram-канала PRIMEFIST (единоборства: MMA, бокс, K1, кикбокс, тай бокс).
+    
+    system_prompt = """Ты — профессиональный редактор спортивных новостей для Telegram-канала PRIMEFIST (MMA, бокс, единоборства).
+Твоя задача — превращать входящие новости в качественный двуязычный контент.
 
-Новость:
+ПРАВИЛА ЯЗЫКА:
+- Поля с суффиксом _ru (hook_ru, short_ru, full_hook_ru, full_ru) ДОЛЖНЫ БЫТЬ ТОЛЬКО НА РУССКОМ ЯЗЫКЕ.
+- Поля с суффиксом _en (hook_en, short_en, full_hook_en, full_en) ДОЛЖНЫ БЫТЬ ТОЛЬКО НА АНГЛИЙСКОМ ЯЗЫКЕ.
+- ПЕРЕВОДИ контент, не оставляй английский текст в русских полях!
+
+СТРУКТУРА:
+1. ТИЗЕР (short_ru/short_en): Строго 200-240 символов. Краткая интрига.
+2. СТАТЬЯ (full_ru/full_en): Подробный текст. ОБЯЗАТЕЛЬНО разделяй на 3-5 абзацев двойным переносом строки (\\n\\n). Текст не должен быть сплошным!
+3. Тизер и статья должны различаться по содержанию и стилю."""
+
+    user_prompt = f"""Новость для обработки:
 Заголовок: {title}
 Описание: {description}
 Язык источника: {lang}
 
-ЗАДАЧА:
-1. Создай КРАТКИЙ ТИЗЕР-АНОНС для канала и ПОДРОБНУЮ СТАТЬЮ для комментариев.
-2. ТИЗЕР (short_ru/short_en):
-   - Должен быть коротким (СТРОГО 200-240 символов).
-   - Это "крючок": завлеки читателя, не пересказывая всю статью.
-   - Должен ОТЛИЧАТЬСЯ от начала подробной статьи.
-3. ПОДРОБНАЯ СТАТЬЯ (full_ru/full_en):
-   - Нет ограничений по длине (но старайся уложиться в 5-8 предложений на язык).
-   - ОБЯЗАТЕЛЬНО разделяй на 3-5 абзацев, используя ДВОЙНОЙ ПЕРЕНОС СТРОКИ (\n\n).
-   - Текст не должен быть "стеной". Читаемость — приоритет.
-4. ЯЗЫК:
-   - Поля RU — строго на русском.
-   - Поля EN — строго на английском (качественный перевод/адаптация). 
-   - НИКАКОГО РУССКОГО в полях *_en!
-
-Верни ТОЛЬКО валидный JSON без markdown и без пояснений:
-
+Верни JSON:
 {{
-  "hook_ru": "Дерзкий хук RU (макс 10 слов).",
-  "hook_en": "Punchy hook EN (English only).",
-  "short_ru": "Тизер RU (200-240 симв). Краткий анонс-интрига.",
-  "short_en": "Teaser EN (200-240 symb). English only.",
-  "full_hook_ru": "Длинный развернутый заголовок статьи RU.",
-  "full_hook_en": "Detailed headline for the article EN.",
-  "full_ru": "Подробная статья RU. С деталями и контекстом.\n\nРазделенная на абзацы вот так.\n\nИ вот так.",
-  "full_en": "Detailed article EN (English only).\n\nWith clear paragraphs.\n\nLike this.",
-  "poll_question": "Вопрос для опроса RU.",
+  "hook_ru": "Дерзкий хук на русском (макс 10 слов).",
+  "hook_en": "Punchy hook in English.",
+  "short_ru": "Тизер на русском (200-240 симв).",
+  "short_en": "Teaser in English (200-240 symb).",
+  "full_hook_ru": "Развернутый заголовок статьи на русском.",
+  "full_hook_en": "Detailed article headline in English.",
+  "full_ru": "Подробная статья на русском. С ДВОЙНЫМИ ПЕРЕНОСАМИ СТРОК МЕЖДУ АБЗАЦАМИ.",
+  "full_en": "Detailed article in English. WITH DOUBLE NEWLINES BETWEEN PARAGRAPHS.",
+  "poll_question": "Вопрос для опроса на русском.",
   "poll_options": ["Вариант 1", "Вариант 2"]
 }}"""
-
-
-
 
     try:
         response = await client.chat.completions.create(
             model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.7,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.4,
             max_tokens=1500
         )
+
         raw = response.choices[0].message.content.strip()
         raw = re.sub(r"```json|```", "", raw).strip()
         data = json.loads(raw)
@@ -1440,11 +1437,11 @@ def discussion_post(ai_data: dict, source: str, tag: str, link: str) -> str:
     return (
         f"<b>🥊 {html.escape(full_hook_ru)} / {html.escape(full_hook_en)}</b>\n\n"
         f"🇷🇺 {html.escape(full_ru)}\n\n"
-        f"───────────────────\n\n"
+        f"━━━━━━━━━━━━━━━━━━━\n\n"
         f"🇬🇧 {html.escape(full_en)}\n\n"
-        f"🔗 <a href=\"{link}\">Link</a>\n"
+        f"🔗 <a href=\"{link}\">Full Story (Link)</a>\n"
         f"📌 Source: {html.escape(source)}\n\n"
-        f"{html.escape(tag)} #primefist"
+        f"{html.escape(tag)} #primefist #fightnews"
     )
 
 
