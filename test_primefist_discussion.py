@@ -196,6 +196,34 @@ class SourceCandidateTest(unittest.TestCase):
         self.assertIn("Steve Erceg", data["short_en"])
         self.assertNotIn("Откройте оригинальный", data["full_ru"])
 
+    def test_fallback_ufc_event_text_is_translated_and_channel_sized(self):
+        summary = (
+            "Official UFC upcoming event: Della Maddalena vs Prates. "
+            "Date/time: Sat, May 2 / 7:00 AM EDT / Main Card. "
+            "Location: RAC Arena Perth WA Australia. "
+            "Main card highlights: Jack Della Maddalena vs Carlos Prates (Welterweight Bout); "
+            "Beneil Dariush vs Quillan Salkilld (Lightweight Bout); "
+            "Tim Elliott vs Steve Erceg (Flyweight Bout)."
+        )
+
+        data = bot_module.fallback_primefist_text(
+            "UFC upcoming event: Della Maddalena vs Prates",
+            summary,
+            "en",
+        )
+        channel = bot_module.channel_post(
+            data,
+            "UFC Events",
+            "https://www.ufc.com/event/ufc-fight-night-may-02-2026",
+        )
+
+        self.assertIn("Делла Маддалена", data["hook_ru"])
+        self.assertIn("Della Maddalena", data["hook_en"])
+        self.assertIn("Джек Делла Маддалена", data["short_ru"])
+        self.assertIn("Главные бои:", data["full_ru"])
+        self.assertNotIn("Official UFC upcoming event", data["short_ru"])
+        self.assertLessEqual(len(channel), 1024)
+
     def test_ufc_event_candidate_is_extracted_from_card_html(self):
         html = """
         <article class="c-card-event--result">
@@ -213,6 +241,10 @@ class SourceCandidateTest(unittest.TestCase):
             bot_module,
             "extract_ufc_fight_summaries",
             return_value=["Fighter A vs Fighter B (Welterweight Bout)"],
+        ), patch.object(
+            bot_module,
+            "extract_ufc_event_image",
+            return_value="https://www.ufc.com/images/event.jpg",
         ):
             candidates = bot_module.extract_ufc_event_candidates(html, set(), now)
 
@@ -221,6 +253,7 @@ class SourceCandidateTest(unittest.TestCase):
         self.assertEqual(candidate["id"], "ufc-event:upcoming:https://www.ufc.com/event/ufc-test")
         self.assertEqual(candidate["source"], "UFC Events")
         self.assertEqual(candidate["link"], "https://www.ufc.com/event/ufc-test")
+        self.assertEqual(candidate["image"], "https://www.ufc.com/images/event.jpg")
         self.assertIn("Fighter A vs Fighter B", candidate["summary_text"])
 
     def test_completed_ufc_fight_summary_includes_winner_and_method(self):

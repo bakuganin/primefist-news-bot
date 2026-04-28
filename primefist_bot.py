@@ -80,6 +80,45 @@ HASHTAG_NAMES = {
     "wathedreamstate": ("WA The Dream State", "WA The Dream State"),
 }
 
+FIGHTER_RU = {
+    "Jack Della Maddalena": "Джек Делла Маддалена",
+    "Carlos Prates": "Карлос Пратес",
+    "Della Maddalena": "Делла Маддалена",
+    "Prates": "Пратес",
+    "Beneil Dariush": "Бенеил Дариуш",
+    "Quillan Salkilld": "Куиллан Салкилд",
+    "Tim Elliott": "Тим Эллиотт",
+    "Steve Erceg": "Стив Эрцег",
+    "Shamil Gaziev": "Шамиль Газиев",
+    "Brando Peričić": "Брандо Перичич",
+    "Tai Tuivasa": "Тай Туиваса",
+    "Louie Sutherland": "Луи Сазерленд",
+    "Aljamain Sterling": "Алджамейн Стерлинг",
+    "Youssef Zalal": "Юссеф Залал",
+}
+
+FIGHTER_RU_OBJECT = {
+    "Carlos Prates": "Карлоса Пратеса",
+    "Prates": "Пратеса",
+    "Quillan Salkilld": "Куиллана Салкилда",
+    "Steve Erceg": "Стива Эрцега",
+    "Brando Peričić": "Брандо Перичича",
+    "Tai Tuivasa": "Тая Туивасу",
+    "Louie Sutherland": "Луи Сазерленда",
+    "Youssef Zalal": "Юссефа Залала",
+}
+
+WEIGHT_RU = {
+    "Welterweight Bout": "полусредний вес",
+    "Lightweight Bout": "легкий вес",
+    "Flyweight Bout": "наилегчайший вес",
+    "Heavyweight Bout": "тяжелый вес",
+    "Featherweight Bout": "полулегкий вес",
+    "Bantamweight Bout": "легчайший вес",
+    "Middleweight Bout": "средний вес",
+    "Women's Bantamweight Bout": "женский легчайший вес",
+}
+
 # THEIR RSS FEEDS LIST
 RSS_FEEDS = [
     {"name": "MMA Fighting", "url": "https://www.mmafighting.com/rss/current", "tag": "#mma", "lang": "en"},
@@ -178,6 +217,26 @@ def first_image_from_html(value: str | None) -> str | None:
     return img.get("src") if img and img.get("src") else None
 
 
+def extract_ufc_event_image(event_url: str) -> str | None:
+    page = fetch_html(event_url)
+    if not page:
+        return None
+    soup = BeautifulSoup(page, "html.parser")
+    for selector in (
+        'meta[property="og:image"]',
+        'meta[name="twitter:image"]',
+        ".c-hero img",
+        "img",
+    ):
+        node = soup.select_one(selector)
+        if not node:
+            continue
+        image = node.get("content") or node.get("src")
+        if image:
+            return urljoin(event_url, image)
+    return None
+
+
 def normalize_x_link(link: str) -> str:
     match = re.search(r"/ufc/status/(\d+)", link or "", flags=re.IGNORECASE)
     if match:
@@ -187,6 +246,15 @@ def normalize_x_link(link: str) -> str:
 
 def compact_for_post(text: str, max_len: int = 420) -> str:
     text = clean_text(text)
+    if len(text) <= max_len:
+        return text
+    trimmed = text[:max_len].rsplit(" ", 1)[0].rstrip(".,;: ")
+    return f"{trimmed}..."
+
+
+def compact_multiline(text: str, max_len: int) -> str:
+    lines = [clean_text(line) for line in (text or "").splitlines()]
+    text = "\n".join(line for line in lines if line).strip()
     if len(text) <= max_len:
         return text
     trimmed = text[:max_len].rsplit(" ", 1)[0].rstrip(".,;: ")
@@ -318,6 +386,196 @@ def fallback_x_text(title: str, description: str) -> dict[str, Any]:
         "short_en": compact_for_post(short_en, 520),
         "full_ru": compact_for_post(full_ru, 950),
         "full_en": compact_for_post(full_en, 950),
+        "poll_question": "",
+        "poll_options": [],
+    }
+
+
+def translate_fighters_ru(text: str) -> str:
+    for en_name, ru_name in FIGHTER_RU.items():
+        text = text.replace(en_name, ru_name)
+    return text
+
+
+def translate_weight_ru(text: str) -> str:
+    for en_weight, ru_weight in WEIGHT_RU.items():
+        text = text.replace(en_weight, ru_weight)
+    return text
+
+
+def translate_matchup_ru(text: str) -> str:
+    text = translate_fighters_ru(text)
+    text = translate_weight_ru(text)
+    text = text.replace(" vs ", " против ")
+    text = text.replace(" def. ", " победил ")
+    text = text.replace("Decision - Unanimous", "единогласное решение")
+    text = text.replace("Decision - Split", "раздельное решение")
+    text = text.replace("KO/TKO", "нокаут/технический нокаут")
+    text = text.replace("Submission", "сабмишен")
+    return text
+
+
+def format_upcoming_matchup_ru(line: str, include_weight: bool = True) -> str:
+    line = clean_text(line)
+    match = re.match(r"(.+?) vs (.+?)(?: \((.+)\))?$", line)
+    if not match:
+        return translate_matchup_ru(line)
+
+    left, right, weight = match.groups()
+    left_ru = FIGHTER_RU.get(left, left)
+    right_ru = FIGHTER_RU_OBJECT.get(right, FIGHTER_RU.get(right, right))
+    text = f"{left_ru} против {right_ru}"
+    if include_weight and weight:
+        text = f"{text} ({WEIGHT_RU.get(weight, weight)})"
+    return text
+
+
+def parse_ufc_event_summary(description: str) -> dict[str, Any]:
+    text = clean_text(description)
+    event_match = re.search(r"Official UFC (.*?): (.*?)\. Date/time:", text)
+    date_match = re.search(r"Date/time: (.*?)\. Location:", text)
+    location_match = re.search(r"Location: (.*?)(?:\. (?:Main card highlights|Top results):|$)", text)
+    fights_match = re.search(r"(?:Main card highlights|Top results): (.*?)(?:\.$|$)", text)
+
+    fights = []
+    if fights_match:
+        fights = [clean_text(part) for part in fights_match.group(1).split(";") if clean_text(part)]
+
+    return {
+        "status": event_match.group(1) if event_match else "",
+        "event": event_match.group(2) if event_match else "",
+        "date": date_match.group(1) if date_match else "",
+        "location": location_match.group(1) if location_match else "",
+        "fights": fights,
+    }
+
+
+def readable_ufc_date_ru(date_text: str) -> str:
+    weekday_ru = {
+        "Sat": "суббота",
+        "Sun": "воскресенье",
+        "Mon": "понедельник",
+        "Tue": "вторник",
+        "Wed": "среда",
+        "Thu": "четверг",
+        "Fri": "пятница",
+    }
+    month_ru = {
+        "May": "мая",
+        "Jun": "июня",
+        "Jul": "июля",
+    }
+    match = re.match(r"\b([A-Z][a-z]{2}),\s+([A-Z][a-z]{2})\s+(\d{1,2})(.*)", date_text or "")
+    if match:
+        weekday, month, day, rest = match.groups()
+        date_text = f"{weekday_ru.get(weekday, weekday)}, {day} {month_ru.get(month, month)}{rest}"
+
+    replacements = {
+        "Main Card": "главный кард",
+    }
+    for source, target in replacements.items():
+        date_text = re.sub(rf"\b{re.escape(source)}\b", target, date_text)
+    return date_text
+
+
+def readable_ufc_location_ru(location: str) -> str:
+    location = location.replace("Perth WA Australia", "Перт, Австралия")
+    location = location.replace("Las Vegas , NV United States", "Лас-Вегас, США")
+    location = location.replace("Newark , NJ United States", "Ньюарк, США")
+    location = location.replace("Macao", "Макао")
+    location = location.replace("Azerbaijan", "Азербайджан")
+    return clean_text(location)
+
+
+def readable_ufc_location_en(location: str) -> str:
+    location = location.replace("RAC Arena Perth WA Australia", "RAC Arena, Perth, Australia")
+    location = location.replace("Meta APEX Las Vegas , NV United States", "Meta APEX, Las Vegas, United States")
+    location = location.replace("Prudential Center Newark , NJ United States", "Prudential Center, Newark, United States")
+    return clean_text(location)
+
+
+def first_fighters_from_event(event: str) -> tuple[str, str] | None:
+    if " vs " not in event:
+        return None
+    left, right = event.split(" vs ", 1)
+    return left.strip(), right.strip()
+
+
+def format_fight_list(lines: list[str], lang: str, limit: int = 4) -> str:
+    selected = lines[:limit]
+    if not selected:
+        return ""
+    if lang == "ru":
+        return "\n".join(f"{idx}. {format_upcoming_matchup_ru(line)}" for idx, line in enumerate(selected, 1))
+    return "\n".join(f"{idx}. {line}" for idx, line in enumerate(selected, 1))
+
+
+def fallback_ufc_event_text(title: str, description: str) -> dict[str, Any]:
+    parsed = parse_ufc_event_summary(description)
+    event = parsed["event"] or re.sub(r"^UFC .*?:\s*", "", title)
+    date_text = parsed["date"]
+    location = parsed["location"]
+    fights = parsed["fights"]
+    main_pair = first_fighters_from_event(event)
+
+    event_ru = translate_matchup_ru(event)
+    date_ru = readable_ufc_date_ru(date_text) if date_text else "дата уточняется"
+    location_ru = readable_ufc_location_ru(location) if location else "локация уточняется"
+    location_en = readable_ufc_location_en(location) if location else "TBA"
+    fight_list_ru = format_fight_list(fights, "ru")
+    fight_list_en = format_fight_list(fights, "en")
+    main_fight_en = fights[0].split(" (", 1)[0] if fights else event
+    main_fight_ru = format_upcoming_matchup_ru(main_fight_en, include_weight=False)
+
+    if main_pair:
+        hook_ru = f"{main_fight_ru}: UFC готовит бой в Перте"
+        hook_en = f"{main_fight_en} headlines UFC Perth"
+    else:
+        hook_ru = f"{event_ru}: новый турнир UFC"
+        hook_en = f"{event} leads the next UFC card"
+
+    if fights:
+        extra_ru = ", ".join(format_upcoming_matchup_ru(line.split(" (", 1)[0], include_weight=False) for line in fights[1:3])
+        extra_en = ", ".join(line.split(" (", 1)[0] for line in fights[1:3])
+    else:
+        extra_ru = ""
+        extra_en = ""
+
+    short_ru = (
+        f"UFC проведет турнир в {location_ru}: главный бой — {main_fight_ru}.\n\n"
+        f"Дата: {date_ru}."
+    )
+    short_en = (
+        f"UFC heads to {location_en} with {main_fight_en} on top of the card.\n\n"
+        f"Date: {date_text or 'TBA'}."
+    )
+    if extra_ru:
+        short_ru += f"\n\nВ карде также: {extra_ru}."
+    if extra_en:
+        short_en += f"\n\nAlso on the card: {extra_en}."
+
+    full_ru = (
+        f"UFC проведет турнир в {location_ru}. Главный бой вечера — {main_fight_ru}.\n\n"
+        f"Дата и время: {date_ru}.\n"
+        f"Место: {location_ru}.\n\n"
+        f"Главные бои:\n{fight_list_ru or 'Кард уточняется.'}\n\n"
+        "Это анонс ближайшего турнира: главный акцент сделан на центральной паре вечера и нескольких заметных боях основного карда."
+    )
+    full_en = (
+        f"UFC is heading to {location_en} with {main_fight_en} as the featured matchup.\n\n"
+        f"Date/time: {date_text or 'TBA'}.\n"
+        f"Venue: {location_en}.\n\n"
+        f"Main card:\n{fight_list_en or 'The card is still being updated.'}\n\n"
+        "This is an official event announcement focused on the headline bout and the key matchups currently listed for the card."
+    )
+
+    return {
+        "hook_ru": compact_for_post(hook_ru, 95),
+        "hook_en": compact_for_post(hook_en, 95),
+        "short_ru": compact_multiline(short_ru, 330),
+        "short_en": compact_multiline(short_en, 330),
+        "full_ru": compact_multiline(full_ru, 1600),
+        "full_en": compact_multiline(full_en, 1600),
         "poll_question": "",
         "poll_options": [],
     }
@@ -749,6 +1007,9 @@ def extract_ufc_event_candidates(page_html: str, posted: set[str], now: datetime
             image_url = urljoin(UFC_EVENTS_URL, img.get("src"))
 
         fight_lines = extract_ufc_fight_summaries(link, status, limit=5)
+        event_image = extract_ufc_event_image(link)
+        if event_image:
+            image_url = event_image
         status_label = {
             "upcoming": "upcoming event",
             "live": "live/today event",
@@ -809,6 +1070,8 @@ def find_selected_article(posted_list: list[str]) -> dict[str, Any] | None:
 def fallback_primefist_text(title: str, description: str, lang: str) -> dict[str, Any]:
     if title.lower().startswith("ufc x:"):
         return fallback_x_text(title, description)
+    if title.lower().startswith("ufc ") and "official ufc" in (description or "").lower():
+        return fallback_ufc_event_text(title, description)
 
     base = compact_for_post(description or title, 360)
     title_text = compact_for_post(title, 110)
@@ -888,10 +1151,14 @@ async def generate_primefist_text(title, description, lang):
 
 def channel_post(ai_data: dict, source: str, link: str) -> str:
     """Короткий пост для канала."""
+    hook_ru = compact_multiline(ai_data["hook_ru"], 95)
+    hook_en = compact_multiline(ai_data["hook_en"], 95)
+    short_ru = compact_multiline(ai_data["short_ru"], 260)
+    short_en = compact_multiline(ai_data["short_en"], 260)
     return (
-        f"<b>🥊 {html.escape(ai_data['hook_ru'])} / {html.escape(ai_data['hook_en'])}</b>\n\n"
-        f"🇷🇺 {html.escape(ai_data['short_ru'])}\n\n"
-        f"🇬🇧 {html.escape(ai_data['short_en'])}\n\n"
+        f"<b>🥊 {html.escape(hook_ru)} / {html.escape(hook_en)}</b>\n\n"
+        f"🇷🇺 {html.escape(short_ru)}\n\n"
+        f"🇬🇧 {html.escape(short_en)}\n\n"
         f"🔗 <a href=\"{link}\">{html.escape(source)} (Link)</a>\n\n"
         f"💬 Подробнее в комментариях\n\n"
         f"#mma #boxing #kickboxing #primefist #fightnews"
