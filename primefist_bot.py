@@ -8,6 +8,9 @@ import html
 import requests
 import random
 import sys
+import shutil
+import subprocess
+import tempfile
 from typing import Any
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta, timezone
@@ -51,6 +54,8 @@ MAX_ENTRIES_PER_FEED = env_int("MAX_ENTRIES_PER_FEED", 15)
 X_POST_LOOKBACK_HOURS = env_int("X_POST_LOOKBACK_HOURS", 8)
 UFC_EVENT_LOOKAHEAD_DAYS = env_int("UFC_EVENT_LOOKAHEAD_DAYS", 21)
 UFC_COMPLETED_LOOKBACK_HOURS = env_int("UFC_COMPLETED_LOOKBACK_HOURS", 72)
+MAX_TELEGRAM_VIDEO_MB = env_int("MAX_TELEGRAM_VIDEO_MB", 49)
+MAX_TELEGRAM_VIDEO_BYTES = MAX_TELEGRAM_VIDEO_MB * 1024 * 1024
 UFC_EVENTS_URL = os.environ.get("UFC_EVENTS_URL", "https://www.ufc.com/events").strip()
 HTTP_HEADERS = {
     "User-Agent": (
@@ -363,6 +368,97 @@ def extract_x_video_url(link: str) -> str | None:
     return None
 
 
+def largest_file_in_directory(directory: str) -> str | None:
+    files = [
+        os.path.join(directory, name)
+        for name in os.listdir(directory)
+        if os.path.isfile(os.path.join(directory, name))
+    ]
+    if not files:
+        return None
+    return max(files, key=lambda path: os.path.getsize(path))
+
+
+def compress_video_for_telegram(video_path: str, output_dir: str) -> str | None:
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        log.warning("ffmpeg is not installed; cannot compress oversized video.")
+        return None
+
+    compressed_path = os.path.join(output_dir, "compressed_for_telegram.mp4")
+    command = [
+        ffmpeg,
+        "-y",
+        "-i", video_path,
+        "-vf", "scale='min(720,iw)':-2",
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "30",
+        "-c:a", "aac",
+        "-b:a", "96k",
+        "-movflags", "+faststart",
+        compressed_path,
+    ]
+
+    try:
+        subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception as e:
+        log.warning("ffmpeg compression failed: %s", e)
+        return None
+
+    if os.path.exists(compressed_path) and os.path.getsize(compressed_path) <= MAX_TELEGRAM_VIDEO_BYTES:
+        return compressed_path
+
+    if os.path.exists(compressed_path):
+        log.warning(
+            "Compressed video is still too large for Telegram Bot API: %.2f MB",
+            os.path.getsize(compressed_path) / 1024 / 1024,
+        )
+    return None
+
+
+def download_video_for_telegram(source_url: str, output_dir: str) -> str | None:
+    if not source_url:
+        return None
+
+    try:
+        from yt_dlp import YoutubeDL
+    except Exception as e:
+        log.warning("yt-dlp is not available; cannot download X video: %s", e)
+        return None
+
+    try:
+        with YoutubeDL({
+            "quiet": True,
+            "no_warnings": True,
+            "noprogress": True,
+            "noplaylist": True,
+            "format": "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/best",
+            "merge_output_format": "mp4",
+            "outtmpl": os.path.join(output_dir, "%(id)s.%(ext)s"),
+        }) as ydl:
+            ydl.download([source_url])
+    except Exception as e:
+        log.warning("yt-dlp download failed for %s: %s", source_url, e)
+        return None
+
+    video_path = largest_file_in_directory(output_dir)
+    if not video_path:
+        log.warning("yt-dlp finished but no video file was created.")
+        return None
+
+    size_bytes = os.path.getsize(video_path)
+    if size_bytes <= MAX_TELEGRAM_VIDEO_BYTES:
+        log.info("Downloaded X video: %s (%.2f MB)", video_path, size_bytes / 1024 / 1024)
+        return video_path
+
+    log.warning(
+        "Downloaded video is too large for Telegram Bot API: %.2f MB. Trying compression.",
+        size_bytes / 1024 / 1024,
+    )
+    return compress_video_for_telegram(video_path, output_dir)
+
+
 def entry_datetime(entry: Any) -> datetime | None:
     if hasattr(entry, "published_parsed") and entry.published_parsed:
         return datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
@@ -538,7 +634,6 @@ def find_x_social_candidate(posted: set[str], now: datetime) -> dict[str, Any] |
                     continue
 
                 has_video = "video" in getattr(entry, "summary", "").lower()
-                video_url = extract_x_video_url(link) if has_video else None
 
                 return {
                     "id": link,
@@ -546,7 +641,7 @@ def find_x_social_candidate(posted: set[str], now: datetime) -> dict[str, Any] |
                     "summary_text": summary_text,
                     "link": link,
                     "image": extract_image(entry),
-                    "video": video_url,
+                    "video_source": link if has_video else None,
                     "source": "UFC X",
                     "tag": "#ufc #mma",
                     "lang": "en",
@@ -558,29 +653,66 @@ def find_x_social_candidate(posted: set[str], now: datetime) -> dict[str, Any] |
     return None
 
 
-def extract_ufc_results(event_url: str, limit: int = 5) -> list[str]:
+def node_text(root: Any, selector: str) -> str:
+    node = root.select_one(selector)
+    return clean_text(node.get_text(" ", strip=True)) if node else ""
+
+
+def extract_ufc_fights(event_url: str, limit: int = 5) -> list[dict[str, str]]:
     page = fetch_html(event_url)
     if not page:
         return []
 
     soup = BeautifulSoup(page, "html.parser")
-    results = []
+    fights = []
     for fight in soup.select(".c-listing-fight")[:limit]:
-        red_name = clean_text(fight.select_one(".c-listing-fight__corner-name--red").get_text(" ", strip=True)) if fight.select_one(".c-listing-fight__corner-name--red") else ""
-        blue_name = clean_text(fight.select_one(".c-listing-fight__corner-name--blue").get_text(" ", strip=True)) if fight.select_one(".c-listing-fight__corner-name--blue") else ""
-        red_outcome = clean_text(fight.select_one(".c-listing-fight__corner--red .c-listing-fight__outcome-wrapper").get_text(" ", strip=True)) if fight.select_one(".c-listing-fight__corner--red .c-listing-fight__outcome-wrapper") else ""
-        blue_outcome = clean_text(fight.select_one(".c-listing-fight__corner--blue .c-listing-fight__outcome-wrapper").get_text(" ", strip=True)) if fight.select_one(".c-listing-fight__corner--blue .c-listing-fight__outcome-wrapper") else ""
-        method = clean_text(fight.select_one(".c-listing-fight__results--desktop .method").get_text(" ", strip=True)) if fight.select_one(".c-listing-fight__results--desktop .method") else ""
-        round_no = clean_text(fight.select_one(".c-listing-fight__results--desktop .round").get_text(" ", strip=True)) if fight.select_one(".c-listing-fight__results--desktop .round") else ""
+        red_name = node_text(fight, ".c-listing-fight__corner-name--red")
+        blue_name = node_text(fight, ".c-listing-fight__corner-name--blue")
+        red_outcome = node_text(fight, ".c-listing-fight__corner--red .c-listing-fight__outcome-wrapper")
+        blue_outcome = node_text(fight, ".c-listing-fight__corner--blue .c-listing-fight__outcome-wrapper")
+        method = node_text(fight, ".c-listing-fight__results--desktop .method")
+        round_no = node_text(fight, ".c-listing-fight__results--desktop .round")
+        weight_class = node_text(fight, ".c-listing-fight__class--desktop .c-listing-fight__class-text")
 
         if not red_name or not blue_name:
             continue
+        fights.append({
+            "red_name": red_name,
+            "blue_name": blue_name,
+            "red_outcome": red_outcome,
+            "blue_outcome": blue_outcome,
+            "method": method,
+            "round": round_no,
+            "weight_class": weight_class,
+        })
+
+    return fights
+
+
+def format_ufc_fight_summary(fight: dict[str, str], status: str) -> str:
+    red_name = fight["red_name"]
+    blue_name = fight["blue_name"]
+    red_outcome = fight.get("red_outcome", "")
+    blue_outcome = fight.get("blue_outcome", "")
+    method = fight.get("method", "")
+    round_no = fight.get("round", "")
+    weight_class = fight.get("weight_class", "")
+
+    if status == "completed":
         winner = red_name if red_outcome.lower() == "win" else blue_name if blue_outcome.lower() == "win" else ""
         result = f"{winner} def. {blue_name if winner == red_name else red_name}" if winner else f"{red_name} vs {blue_name}"
         details = ", ".join(part for part in [method, f"R{round_no}" if round_no else ""] if part)
-        results.append(f"{result} ({details})" if details else result)
+        return f"{result} ({details})" if details else result
 
-    return results
+    matchup = f"{red_name} vs {blue_name}"
+    return f"{matchup} ({weight_class})" if weight_class else matchup
+
+
+def extract_ufc_fight_summaries(event_url: str, status: str, limit: int = 5) -> list[str]:
+    return [
+        format_ufc_fight_summary(fight, status)
+        for fight in extract_ufc_fights(event_url, limit)
+    ]
 
 
 def extract_ufc_event_candidates(page_html: str, posted: set[str], now: datetime) -> list[dict[str, Any]]:
@@ -616,17 +748,20 @@ def extract_ufc_event_candidates(page_html: str, posted: set[str], now: datetime
         if img and img.get("src"):
             image_url = urljoin(UFC_EVENTS_URL, img.get("src"))
 
-        result_lines = extract_ufc_results(link) if status == "completed" else []
+        fight_lines = extract_ufc_fight_summaries(link, status, limit=5)
         status_label = {
             "upcoming": "upcoming event",
             "live": "live/today event",
             "completed": "completed event",
         }.get(status, status)
-        result_text = f" Top results: {'; '.join(result_lines)}." if result_lines else ""
+        fight_text = ""
+        if fight_lines:
+            label = "Top results" if status == "completed" else "Main card highlights"
+            fight_text = f" {label}: {'; '.join(fight_lines)}."
         summary_text = (
             f"Official UFC {status_label}: {title}. "
             f"Date/time: {date_text}. "
-            f"Location: {location or 'TBA'}.{result_text}"
+            f"Location: {location or 'TBA'}.{fight_text}"
         )
 
         candidates.append({
@@ -940,20 +1075,26 @@ async def send_channel_post(
     channel_id: str,
     image_url: str | None,
     text: str,
-    video_url: str | None = None,
+    video_source: str | None = None,
 ):
-    if video_url and len(text) <= 1024:
-        try:
-            return await bot.send_video(
-                chat_id=channel_id,
-                video=video_url,
-                caption=text,
-                parse_mode=ParseMode.HTML,
-                supports_streaming=True,
-            )
-        except Exception as e:
-            log.warning("Video post failed, falling back to photo/text: %s", e)
-    elif video_url:
+    if video_source and len(text) <= 1024:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            video_path = await asyncio.to_thread(download_video_for_telegram, video_source, tmpdir)
+            if video_path:
+                try:
+                    with open(video_path, "rb") as video_file:
+                        return await bot.send_video(
+                            chat_id=channel_id,
+                            video=video_file,
+                            caption=text,
+                            parse_mode=ParseMode.HTML,
+                            supports_streaming=True,
+                        )
+                except Exception as e:
+                    log.warning("Video upload failed, falling back to photo/text: %s", e)
+            else:
+                log.warning("Video download failed or exceeded Telegram limit; falling back to photo/text.")
+    elif video_source:
         log.info("Caption is longer than Telegram video limit; sending photo/text post instead.")
 
     if image_url and len(text) <= 1024:
@@ -1078,7 +1219,7 @@ async def main():
             CHANNEL_ID,
             selected_article.get("image"),
             ch_text,
-            selected_article.get("video"),
+            selected_article.get("video_source"),
         )
             
         log.info("Successfully posted Main to Telegram!")

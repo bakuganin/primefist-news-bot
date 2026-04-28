@@ -1,6 +1,8 @@
 import unittest
+import tempfile
 from types import SimpleNamespace
 from datetime import datetime, timezone
+from unittest.mock import patch
 
 import primefist_bot as bot_module
 
@@ -141,18 +143,23 @@ class DiscussionCommentTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_channel_post_prefers_video_over_photo(self):
         fake_bot = FakeBot([])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            video_path = f"{tmpdir}/video.mp4"
+            with open(video_path, "wb") as video:
+                video.write(b"video")
 
-        sent = await bot_module.send_channel_post(
-            fake_bot,
-            "-1003902344210",
-            "https://example.com/image.jpg",
-            "<b>Post</b>",
-            "https://video.twimg.com/test.mp4"
-        )
+            with patch.object(bot_module, "download_video_for_telegram", return_value=video_path):
+                sent = await bot_module.send_channel_post(
+                    fake_bot,
+                    "-1003902344210",
+                    "https://example.com/image.jpg",
+                    "<b>Post</b>",
+                    "https://x.com/ufc/status/12345"
+                )
 
         self.assertEqual(sent.message_id, 1002)
         self.assertEqual(len(fake_bot.sent_videos), 1)
-        self.assertEqual(fake_bot.sent_videos[0]["video"], "https://video.twimg.com/test.mp4")
+        self.assertEqual(fake_bot.sent_videos[0]["video"].name, video_path)
         self.assertEqual(fake_bot.sent_photos, [])
         self.assertEqual(fake_bot.sent_messages, [])
 
@@ -202,7 +209,12 @@ class SourceCandidateTest(unittest.TestCase):
         """
         now = datetime(2026, 4, 28, tzinfo=timezone.utc)
 
-        candidates = bot_module.extract_ufc_event_candidates(html, set(), now)
+        with patch.object(
+            bot_module,
+            "extract_ufc_fight_summaries",
+            return_value=["Fighter A vs Fighter B (Welterweight Bout)"],
+        ):
+            candidates = bot_module.extract_ufc_event_candidates(html, set(), now)
 
         self.assertEqual(len(candidates), 1)
         candidate = candidates[0]
@@ -210,6 +222,36 @@ class SourceCandidateTest(unittest.TestCase):
         self.assertEqual(candidate["source"], "UFC Events")
         self.assertEqual(candidate["link"], "https://www.ufc.com/event/ufc-test")
         self.assertIn("Fighter A vs Fighter B", candidate["summary_text"])
+
+    def test_completed_ufc_fight_summary_includes_winner_and_method(self):
+        fight = {
+            "red_name": "Aljamain Sterling",
+            "blue_name": "Youssef Zalal",
+            "red_outcome": "Win",
+            "blue_outcome": "Loss",
+            "method": "Decision - Unanimous",
+            "round": "5",
+            "weight_class": "Featherweight Bout",
+        }
+
+        summary = bot_module.format_ufc_fight_summary(fight, "completed")
+
+        self.assertEqual(summary, "Aljamain Sterling def. Youssef Zalal (Decision - Unanimous, R5)")
+
+    def test_upcoming_ufc_fight_summary_includes_weight_class(self):
+        fight = {
+            "red_name": "Jack Della Maddalena",
+            "blue_name": "Carlos Prates",
+            "red_outcome": "",
+            "blue_outcome": "",
+            "method": "",
+            "round": "",
+            "weight_class": "Welterweight Bout",
+        }
+
+        summary = bot_module.format_ufc_fight_summary(fight, "upcoming")
+
+        self.assertEqual(summary, "Jack Della Maddalena vs Carlos Prates (Welterweight Bout)")
 
 
 if __name__ == "__main__":
