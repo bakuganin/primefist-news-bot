@@ -439,6 +439,8 @@ def fallback_x_text(title: str, description: str) -> dict[str, Any]:
         "hook_en": compact_for_post(hook_en, 95),
         "short_ru": compact_for_post(short_ru, 520),
         "short_en": compact_for_post(short_en, 520),
+        "full_hook_ru": compact_for_post(hook_ru, 180),
+        "full_hook_en": compact_for_post(hook_en, 180),
         "full_ru": compact_for_post(full_ru, 950),
         "full_en": compact_for_post(full_en, 950),
         "poll_question": "",
@@ -627,6 +629,8 @@ def fallback_ufc_event_text(title: str, description: str) -> dict[str, Any]:
         "hook_en": compact_for_post(hook_en, 95),
         "short_ru": compact_multiline(short_ru, 330),
         "short_en": compact_multiline(short_en, 330),
+        "full_hook_ru": compact_for_post(hook_ru, 180),
+        "full_hook_en": compact_for_post(hook_en, 180),
         "full_ru": compact_multiline(full_ru, 1600),
         "full_en": compact_multiline(full_en, 1600),
         "poll_question": "",
@@ -1252,6 +1256,8 @@ def fallback_cage_warriors_text(title: str, description: str) -> dict[str, Any]:
         "hook_en": compact_for_post(hook_en, 95),
         "short_ru": compact_multiline(short_ru, 330),
         "short_en": compact_multiline(short_en, 330),
+        "full_hook_ru": compact_for_post(hook_ru, 180),
+        "full_hook_en": compact_for_post(hook_en, 180),
         "full_ru": compact_multiline(full_ru, 1600),
         "full_en": compact_multiline(full_en, 1600),
         "poll_question": "",
@@ -1301,6 +1307,8 @@ def fallback_rss_text(title: str, description: str, lang: str) -> dict[str, Any]
         "hook_en": compact_for_post(hook_en, 95),
         "short_ru": compact_multiline(short_ru, 330),
         "short_en": compact_multiline(short_en, 330),
+        "full_hook_ru": compact_for_post(hook_ru, 180),
+        "full_hook_en": compact_for_post(hook_en, 180),
         "full_ru": compact_multiline(full_ru, 1600),
         "full_en": compact_multiline(full_en, 1600),
         "poll_question": "",
@@ -1330,20 +1338,27 @@ async def generate_primefist_text(title, description, lang):
 Описание: {description}
 Язык источника: {lang}
 
-ВАЖНО: Пиши только про саму новость. НЕ используй фразы типа "Источник сообщил", "Суть новости вынесена", "Текст очищен", "В единоборствах появилась новая тема" или любые другие вводные слова о процессе обработки новости. Пиши сразу по существу.
+ЗАДАЧА:
+1. Создай короткий хук и тизер для основного канала.
+2. Создай подробную статью для комментариев.
+3. ВАЖНО: Хук и текст на английском должны быть КАЧЕСТВЕННЫМ ПЕРЕВОДОМ или адаптацией, а не просто копией русского текста.
+4. ВАЖНО: Используй двойные переносы строк (\n\n) между абзацами. Текст не должен быть "стеной".
 
 Верни ТОЛЬКО валидный JSON без markdown и без пояснений:
 
 {{
-  "hook_ru": "Дерзкий байтерский заголовок RU БЕЗ эмодзи. Макс 12 слов. Интрига, провокация.",
-  "hook_en": "Same bait headline EN БЕЗ эмодзи. Max 12 words. Punchy and bold.",
-  "short_ru": "1-2 предложения анонса-тизера на русском. Самая суть, чтобы заинтересовать. Используй двойной перенос строки \n\n.",
-  "short_en": "1-2 sentence teaser in English. The main hook to grab attention. Use double newlines \n\n.",
-  "full_ru": "ПОДРОБНЫЙ разбор новости на русском. 5-8 предложений. Обязательно раскрой детали, предысторию или последствия. Разделяй текст на 3-4 абзаца с помощью \n\n. Этот текст пойдет в комментарии как основная статья.",
-  "full_en": "DETAILED news analysis in English. 5-8 sentences. Provide context, background, or implications. Must use 3-4 paragraph breaks (\n\n). This text serves as the main article in comments.",
-  "poll_question": "Увлекательный вопрос для опроса на русском (например: Кто победит?). Если новость не подходит для опроса, оставь пустую строку.",
-  "poll_options": ["Вариант 1", "Вариант 2", "Вариант 3"] // Массив строк с вариантами ответов (не более 4). Если опрос не нужен, оставь пустой массив []
+  "hook_ru": "Короткий дерзкий хук RU (макс 10 слов).",
+  "hook_en": "Short punchy hook EN (translated/adapted).",
+  "short_ru": "Тизер на 1-2 предложения RU. Интрига.",
+  "short_en": "Teaser 1-2 sentences EN.",
+  "full_hook_ru": "Более развернутый и солидный заголовок статьи RU (можно до 20 слов).",
+  "full_hook_en": "Detailed article headline EN.",
+  "full_ru": "Подробная статья RU (5-10 предложений). Обязательно 3-4 абзаца, разделенных \n\n. Раскрой детали новости.",
+  "full_en": "Detailed article EN. 5-10 sentences. 3-4 paragraphs with \n\n. Provide context.",
+  "poll_question": "Вопрос для опроса RU.",
+  "poll_options": ["Вариант 1", "Вариант 2"]
 }}"""
+
 
     try:
         response = await client.chat.completions.create(
@@ -1355,11 +1370,19 @@ async def generate_primefist_text(title, description, lang):
         raw = response.choices[0].message.content.strip()
         raw = re.sub(r"```json|```", "", raw).strip()
         data = json.loads(raw)
-        required = {"hook_ru", "hook_en", "short_ru", "short_en", "full_ru", "full_en"}
+        required = {"hook_ru", "hook_en", "short_ru", "short_en", "full_ru", "full_en", "full_hook_ru", "full_hook_en"}
         if not required.issubset(data):
+            # Fallback for missing fields if old AI model or logic
+            if "hook_ru" in data and "full_hook_ru" not in data:
+                data["full_hook_ru"] = data["hook_ru"]
+            if "hook_en" in data and "full_hook_en" not in data:
+                data["full_hook_en"] = data["hook_en"]
+            
             missing = ", ".join(sorted(required - set(data)))
-            raise ValueError(f"Groq response missing required fields: {missing}")
+            if missing:
+                log.warning(f"Groq response missing some fields: {missing}")
         return data
+
     except Exception as e:
         log.error(f"Groq API error: {e}")
         log.warning("Using fallback post text because Groq generation failed.")
@@ -1367,10 +1390,11 @@ async def generate_primefist_text(title, description, lang):
 
 def channel_post(ai_data: dict, source: str, link: str) -> str:
     """Короткий пост для канала."""
-    hook_ru = compact_multiline(ai_data["hook_ru"], 95)
-    hook_en = compact_multiline(ai_data["hook_en"], 95)
-    short_ru = compact_multiline(ai_data["short_ru"], 260)
-    short_en = compact_multiline(ai_data["short_en"], 260)
+    hook_ru = ai_data.get("hook_ru", "Новость").strip()
+    hook_en = ai_data.get("hook_en", "News").strip()
+    short_ru = ai_data.get("short_ru", "").strip()
+    short_en = ai_data.get("short_en", "").strip()
+    
     return (
         f"<b>🥊 {html.escape(hook_ru)} / {html.escape(hook_en)}</b>\n\n"
         f"🇷🇺 {html.escape(short_ru)}\n\n"
@@ -1382,16 +1406,22 @@ def channel_post(ai_data: dict, source: str, link: str) -> str:
 
 
 def discussion_post(ai_data: dict, source: str, tag: str, link: str) -> str:
-    """Полный пост для комментариев."""
+    """Полный пост для комментариев с подробной статьей."""
+    full_hook_ru = ai_data.get("full_hook_ru", ai_data.get("hook_ru", "Статья")).strip()
+    full_hook_en = ai_data.get("full_hook_en", ai_data.get("hook_en", "Article")).strip()
+    full_ru = ai_data.get("full_ru", "").strip()
+    full_en = ai_data.get("full_en", "").strip()
+
     return (
-        f"<b>🥊 {html.escape(ai_data['hook_ru'])} / {html.escape(ai_data['hook_en'])}</b>\n\n"
-        f"🇷🇺 {html.escape(ai_data['full_ru'])}\n\n"
+        f"<b>🥊 {html.escape(full_hook_ru)} / {html.escape(full_hook_en)}</b>\n\n"
+        f"🇷🇺 {html.escape(full_ru)}\n\n"
         f"───────────────────\n\n"
-        f"🇬🇧 {html.escape(ai_data['full_en'])}\n\n"
+        f"🇬🇧 {html.escape(full_en)}\n\n"
         f"🔗 <a href=\"{link}\">Link</a>\n"
         f"📌 Source: {html.escape(source)}\n\n"
         f"{html.escape(tag)} #primefist"
     )
+
 
 def parse_chat_id(value: str) -> int | str:
     try:
